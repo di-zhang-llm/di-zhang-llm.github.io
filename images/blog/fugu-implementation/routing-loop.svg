@@ -1,0 +1,79 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="650" viewBox="0 0 1200 650" role="img" aria-labelledby="title desc">
+  <title id="title">Fugu routing loop</title>
+  <desc id="desc">Diagram of Fugu reading a transcript with a small Qwen3 backbone, using a hidden state and linear routing head to choose one frontier worker model, then returning that worker's answer.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .label { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .small { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .mono { font: 700 16px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #1f2937; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 10; }
+      .input { fill: #ecfeff; stroke: #06b6d4; }
+      .backbone { fill: #f0fdf4; stroke: #22c55e; }
+      .head { fill: #fff7ed; stroke: #f97316; }
+      .worker { fill: #f8fafc; stroke: #64748b; }
+      .answer { fill: #fef2f2; stroke: #ef4444; }
+      .line { fill: none; stroke: #334155; stroke-width: 3; marker-end: url(#arrow); }
+      .thin { fill: none; stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 7 7; }
+      .badge { fill: #111827; }
+      .badge-text { font: 700 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #ffffff; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" fill="#fbfdff"/>
+  <text x="58" y="62" class="title">Fugu is a routing policy, not a worker model</text>
+  <text x="60" y="94" class="subtitle">The small orchestrator only computes routing logits; the selected frontier worker writes the answer.</text>
+
+  <rect x="70" y="170" width="195" height="130" class="box input"/>
+  <text x="100" y="212" class="label">Transcript</text>
+  <text x="100" y="242" class="small">raw role/content text</text>
+  <text x="100" y="272" class="mono">role: content</text>
+
+  <path d="M265 235 H340" class="line"/>
+
+  <rect x="340" y="155" width="230" height="160" class="box backbone"/>
+  <text x="375" y="196" class="label">Qwen3-0.6B</text>
+  <text x="375" y="227" class="small">forward pass only</text>
+  <text x="375" y="258" class="small">read hidden state at -2</text>
+  <text x="375" y="288" class="mono">h in R^1024</text>
+
+  <path d="M570 235 H650" class="line"/>
+
+  <rect x="650" y="165" width="195" height="140" class="box head"/>
+  <text x="686" y="206" class="label">Linear head</text>
+  <text x="686" y="238" class="small">bias-free routing</text>
+  <text x="686" y="268" class="mono">W_head h</text>
+
+  <path d="M845 235 H925" class="line"/>
+
+  <rect x="925" y="110" width="205" height="250" class="box worker"/>
+  <text x="958" y="150" class="label">Worker pool</text>
+  <rect x="955" y="178" width="145" height="34" rx="7" fill="#eff6ff" stroke="#60a5fa"/>
+  <text x="982" y="201" class="small">GPT-style</text>
+  <rect x="955" y="226" width="145" height="34" rx="7" fill="#f0fdf4" stroke="#22c55e"/>
+  <text x="974" y="249" class="small">Gemini-style</text>
+  <rect x="955" y="274" width="145" height="34" rx="7" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="974" y="297" class="small">Claude-style</text>
+  <text x="958" y="335" class="small">one selected per turn</text>
+
+  <path d="M1028 360 C1028 425 930 455 850 455" class="line"/>
+  <rect x="620" y="398" width="230" height="115" class="box answer"/>
+  <text x="654" y="439" class="label">Returned answer</text>
+  <text x="654" y="470" class="small">worker text is user-visible</text>
+  <text x="654" y="498" class="small">orchestrator text is discarded</text>
+
+  <path d="M620 455 C470 455 340 407 248 313" class="thin"/>
+  <rect x="305" y="398" width="210" height="115" class="box"/>
+  <text x="337" y="438" class="label">Turn loop</text>
+  <text x="337" y="470" class="small">worker / thinker / verifier</text>
+  <text x="337" y="498" class="small">stop at accept or budget</text>
+
+  <rect x="70" y="535" width="1060" height="52" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <circle cx="100" cy="561" r="12" class="badge"/>
+  <text x="96" y="566" class="badge-text">1</text>
+  <text x="122" y="567" class="small">Latency story: one backbone forward plus one matrix multiply, not a full decode by the orchestrator.</text>
+</svg>

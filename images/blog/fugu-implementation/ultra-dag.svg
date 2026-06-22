@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+  <title id="title">Fugu-Ultra workflow DAG</title>
+  <desc id="desc">Diagram of Fugu-Ultra's Conductor emitting model, subtask, and access-list arrays that define a topologically ordered workflow over worker models.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+    <style>
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .subtitle { font: 500 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .label { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #111827; }
+      .small { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .mono { font: 700 15px ui-monospace, SFMono-Regular, Consolas, monospace; fill: #1f2937; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 10; }
+      .cond { fill: #eef2ff; stroke: #6366f1; }
+      .step1 { fill: #ecfeff; stroke: #06b6d4; }
+      .step2 { fill: #f0fdf4; stroke: #22c55e; }
+      .step3 { fill: #fff7ed; stroke: #f97316; }
+      .step4 { fill: #fef2f2; stroke: #ef4444; }
+      .memory { fill: #f8fafc; stroke: #64748b; }
+      .line { fill: none; stroke: #334155; stroke-width: 3; marker-end: url(#arrow); }
+      .soft { fill: none; stroke: #94a3b8; stroke-width: 2; stroke-dasharray: 7 7; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1200" height="700" fill="#fbfdff"/>
+  <text x="58" y="62" class="title">Fugu-Ultra writes a workflow, then executes it</text>
+  <text x="60" y="94" class="subtitle">The Conductor emits three aligned lists; access_list defines what earlier outputs each step may see.</text>
+
+  <rect x="70" y="145" width="270" height="170" class="box cond"/>
+  <text x="105" y="187" class="label">7B Conductor</text>
+  <text x="105" y="220" class="small">one-shot workflow plan</text>
+  <text x="105" y="252" class="mono">model_id[]</text>
+  <text x="105" y="280" class="mono">subtasks[]</text>
+  <text x="105" y="308" class="mono">access_list[]</text>
+
+  <path d="M340 230 H430" class="line"/>
+
+  <rect x="430" y="120" width="260" height="90" class="box step1"/>
+  <text x="462" y="157" class="label">Step 1</text>
+  <text x="462" y="184" class="small">specialist draft</text>
+
+  <rect x="430" y="270" width="260" height="90" class="box step2"/>
+  <text x="462" y="307" class="label">Step 2</text>
+  <text x="462" y="334" class="small">independent attempt</text>
+
+  <rect x="795" y="195" width="260" height="100" class="box step3"/>
+  <text x="827" y="232" class="label">Step 3</text>
+  <text x="827" y="260" class="small">compare selected outputs</text>
+
+  <rect x="795" y="430" width="260" height="100" class="box step4"/>
+  <text x="827" y="467" class="label">Step 4</text>
+  <text x="827" y="495" class="small">final synthesis</text>
+
+  <path d="M690 165 C740 170 760 195 795 230" class="line"/>
+  <path d="M690 315 C745 305 765 277 795 260" class="line"/>
+  <path d="M925 295 V430" class="line"/>
+
+  <path d="M560 210 V270" class="soft"/>
+  <text x="575" y="244" class="small">not automatic</text>
+
+  <rect x="80" y="410" width="300" height="120" class="box memory"/>
+  <text x="112" y="450" class="label">Isolation rule</text>
+  <text x="112" y="482" class="small">Inside one workflow, a worker sees</text>
+  <text x="112" y="510" class="small">only outputs named by access_list.</text>
+
+  <rect x="80" y="560" width="975" height="58" class="box memory"/>
+  <text x="112" y="596" class="small">Across turns, tool-call memory can persist so agents do not rediscover the same environment state.</text>
+</svg>

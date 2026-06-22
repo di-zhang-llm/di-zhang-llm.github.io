@@ -1,3 +1,14 @@
+- id: how-fugu-is-implemented-a-technical-inspect
+  date: 2026-06-22
+  type: blog
+  title: "How Fugu Is Implemented"
+  summary: "Technical inspection of Sakana Fugu as a learned orchestrator over frozen frontier models, covering routing, SVF, sep-CMA-ES training, Fugu-Ultra, and execution evidence."
+  url: "/blog/how-fugu-is-implemented-a-technical-inspect/"
+  tags:
+    - fugu
+    - llm-orchestration
+    - agents
+
 - id: citeclaw-reference-infrastructure
   date: 2026-06-10
   type: blog

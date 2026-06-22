@@ -10,17 +10,17 @@ excerpt: "A technical inspection of Sakana Fugu as a learned orchestrator: a sma
 
 ## 0. What is Sakana Fugu
 
-Sakana Fugu is a **learned orchestrator** sold as if it were a single model. You call one OpenAI-compatible endpoint; behind it, Fugu routes your query across a pool of frontier LLMs from different vendors (Gemini-3.1-Pro, Claude-Opus-4.8, GPT-5.5, and others) and returns one answer. The pitch is "frontier capability without single-vendor dependency": because the pool is swappable and no provider is hardcoded, Fugu can dodge export-control and availability constraints while still reaching — and on several benchmarks exceeding — the best single model. It ships in two flavors: **Fugu** (latency-optimized, picks one worker per turn) and **Fugu-Ultra** (quality-optimized, plans a multi-step multi-agent workflow). The public `SakanaAI/fugu` GitHub repo is 100% shell — it just installs the closed API into Codex; the actual method lives in two ICLR-2026 papers (TRINITY and Conductor) plus a technical report.
+Sakana Fugu is a **learned orchestrator** sold as if it were a single model. You call one OpenAI-compatible endpoint; behind it, Fugu routes your query across a pool of frontier LLMs from different vendors (Gemini-3.1-Pro, Claude-Opus-4.8, GPT-5.5, and others) and returns one answer. The pitch is "frontier capability without single-vendor dependency": because the pool is swappable and no provider is hardcoded, Fugu can dodge export-control and availability constraints while still reaching — and on several benchmarks exceeding — the best single model. It ships in two flavors: **Fugu** (latency-optimized, picks one worker per turn) and **Fugu-Ultra** (quality-optimized, plans a multi-step multi-agent workflow). The public `SakanaAI/fugu` GitHub repo is 100% shell — it just installs the closed API into Codex; the actual method lives in two papers, **TRINITY** and **Conductor**, plus the Sakana Fugu technical report ([Sakana AI, 2026](#ref-sakana-fugu-report); [Xu et al., 2026](#ref-trinity); [Nielsen et al., 2026](#ref-conductor)).
 
 The key reframing: **Fugu is not a model, it is a policy over models.** What Sakana trained is not a better LLM but a tiny decision-maker that knows *which existing LLM to ask, for what, and in what order* — leaving the heavy lifting to the frozen frontier workers it commands.
 
 ## 0.1 How Sakana Fugu really works
 
-Strip the marketing and the mechanism is surprisingly small. Fugu runs a **~0.6B-parameter backbone (Qwen3-0.6B) that never produces a user-facing answer**. Instead, for a given conversation it computes one hidden vector and feeds it to a **bias-free linear head** that outputs a score per worker model. The highest-scoring worker is dispatched the query; its reply is what you see. The orchestrator's own text generation is thrown away — only the routing logits are used — so a routing decision costs roughly a single forward pass, not a full decode. That is the entire latency story.
+Strip the marketing and the mechanism is surprisingly small. Fugu runs a **~0.6B-parameter backbone (Qwen3-0.6B) that never produces a user-facing answer**. Instead, for a given conversation it computes one hidden vector and feeds it to a **bias-free linear head** that outputs a score per worker model. The highest-scoring worker is dispatched the query; its reply is what you see. The orchestrator's own text generation is thrown away — only the routing logits are used — so a routing decision costs roughly a single forward pass, not a full decode. That is the entire latency story ([Sakana AI, 2026](#ref-sakana-fugu-report); [Xu et al., 2026](#ref-trinity)).
 
 What makes it *learned* rather than hand-tuned: the head plus a handful of **singular-value scale offsets** on the backbone (together ~19.5K trainable numbers — see §2.3) are optimized so that the routing logits correlate with which worker actually succeeds. Training is gradient-free (an evolutionary strategy on end-to-end task success), because the signal is sparse, expensive, and weakly coupled. Empirically the learned routing tracks each model's real strengths — sending coding-terminal work toward GPT, graduate science toward Gemini — and on a 37-case routing fixture our reconstruction reproduces the reference decisions at 95–100% (§6).
 
-**Fugu** (the everyday variant) stops there: per turn, read hidden state → pick one worker → optionally a Thinker/Verifier role → repeat until a verifier accepts or a turn budget is hit. **Fugu-Ultra** swaps the per-turn picker for a larger 7B "Conductor" that, in one shot, writes a whole **workflow graph** — a list of sub-tasks, which worker handles each, and which earlier outputs each may see — then executes it, with agents kept isolated within a workflow but sharing tool-call memory across the conversation (§5). Either way, **no worker weights are touched**; the whole system is composition over other people's models.
+**Fugu** (the everyday variant) stops there: per turn, read hidden state → pick one worker → optionally a Thinker/Verifier role → repeat until a verifier accepts or a turn budget is hit. **Fugu-Ultra** swaps the per-turn picker for a larger 7B "Conductor" that, in one shot, writes a whole **workflow graph** — a list of sub-tasks, which worker handles each, and which earlier outputs each may see — then executes it, with agents kept isolated within a workflow but sharing tool-call memory across the conversation (§5). Either way, **no worker weights are touched**; the whole system is composition over other people's models ([Nielsen et al., 2026](#ref-conductor)).
 
 ---
 
@@ -39,7 +39,7 @@ If true, no generation, no fine-tuned judge, and no learned attention over candi
 
 ### 2.1 The selection policy
 
-**A note on variants up front**, because the two differ and all executable evidence below is from the **academic TRINITY checkpoint** (`model_iter_60.npy`), whose head emits $L+3 = 10$ logits. The **production Fugu** described in the report drops roles and emits only $L$ — same backbone, narrower head. Claims tagged / are the academic variant;  is the product.
+**A note on variants up front**, because the two differ and all executable evidence below is from the **academic TRINITY checkpoint** (`model_iter_60.npy`), whose head emits $L+3 = 10$ logits. The **production Fugu** described in the report drops roles and emits only $L$ — same backbone, narrower head. Claims about the role-emitting head are TRINITY claims; claims about role-free routing are product Fugu claims.
 
 Let $h(s) \in \mathbb{R}^{d}$ be the backbone hidden state at the penultimate token for transcript state $s$ ($d = 1024$ for Qwen3-0.6B). A bias-free linear head $f_\theta : \mathbb{R}^d \to \mathbb{R}^{L}$ induces a categorical policy over workers:
 
@@ -61,7 +61,7 @@ The **production Fugu** drops roles entirely ($L$ logits only), shrinking the co
 
 ### 2.2 Singular-value fine-tuning (SVF) of the backbone
 
-To adapt the backbone's *representation* without full fine-tuning, Fugu uses SVF. For each selected weight matrix $W \in \mathbb{R}^{m \times n}$, take its singular value decomposition
+To adapt the backbone's *representation* without full fine-tuning, Fugu uses SVF, following the singular-value adaptation line used in Transformer-Squared ([Sun et al., 2025](#ref-transformer-squared)). For each selected weight matrix $W \in \mathbb{R}^{m \times n}$, take its singular value decomposition
 
 $$
 W = U \Sigma V^\top, \qquad
@@ -111,7 +111,7 @@ The head block reshapes as $W_{\text{head}} = \mathrm{reshape}(x_{9216:},\, (L{+
 
 ## 3. Fugu — training
 
-Training is **two-stage**: a supervised warm start on single-step tasks, then an evolutionary refinement on end-to-end trajectories.
+Training is **two-stage** in the product report: a supervised warm start on single-step tasks, then an evolutionary refinement on end-to-end trajectories ([Sakana AI, 2026](#ref-sakana-fugu-report)). The open academic TRINITY artifact covers the evolved-coordinator line but does not expose the product SFT stage ([Xu et al., 2026](#ref-trinity)).
 
 ### 3.1 Stage 1 — supervised fine-tuning (SFT) on single-step tasks
 
@@ -147,7 +147,7 @@ $$
 J(\theta) := \mathbb{E}_{\tau \sim \pi_\theta}\big[R(\tau)\big].
 $$
 
-This is optimized **without gradients** — the parameters are weakly coupled, the per-evaluation cost is high (every rollout is many LLM calls), and each run is a Bernoulli draw, so REINFORCE gradients are low-SNR. The paper uses **separable CMA-ES** (Ros & Hansen 2008): nominally a CMA-ES whose covariance is constrained to be diagonal, $C = \mathrm{diag}(c_1^2,\dots,c_N^2)$, dropping cost from $O(N^2)/O(N^3)$ to $O(N)$. (In pycma the diagonal adaptation is carried by a per-coordinate step-size vector `sigma_vec` rather than a literal diagonal $C$ — mechanism dissected in §7.)
+This is optimized **without gradients** — the parameters are weakly coupled, the per-evaluation cost is high (every rollout is many LLM calls), and each run is a Bernoulli draw, so REINFORCE gradients are low-SNR. The paper uses **separable CMA-ES**: nominally a CMA-ES whose covariance is constrained to be diagonal, $C = \mathrm{diag}(c_1^2,\dots,c_N^2)$, dropping cost from $O(N^2)/O(N^3)$ to $O(N)$ ([Ros and Hansen, 2008](#ref-ros-hansen-sepcma)). (In pycma the diagonal adaptation is carried by a per-coordinate step-size vector `sigma_vec` rather than a literal diagonal $C$ — mechanism dissected in §7.)
 
 Maintaining a parent $m \in \mathbb{R}^N$, a scalar step size $\sigma$, and a per-coordinate scale $d \in \mathbb{R}^N$ (the diagonal), each iteration samples a population of $\lambda$ candidates:
 
@@ -227,7 +227,7 @@ returning $O_\tau$ (the latest worker response); if no verifier accepts, it retu
 
 ## 5. Fugu-Ultra — the Conductor line
 
-Fugu-Ultra replaces the per-turn selector with a 7B LM that emits an **entire agentic workflow** in natural language, parsed into three equal-length lists defining a DAG over workers:
+Fugu-Ultra replaces the per-turn selector with a 7B LM that emits an **entire agentic workflow** in natural language, parsed into three equal-length lists defining a DAG over workers ([Nielsen et al., 2026](#ref-conductor)):
 
 $$
 \texttt{model\_id}[1{:}T],\quad
@@ -244,7 +244,7 @@ $$
 
 ### 5.1 Training — GRPO
 
-The Conductor is trained with GRPO on a progressive reward (the $0/0.5/1$ structure is the documented design; in code the correctness term is supplied by an external task-specific function, not a hardcoded constant):
+The Conductor is trained with GRPO on a progressive reward (the $0/0.5/1$ structure is the documented design; in code the correctness term is supplied by an external task-specific function, not a hardcoded constant). The GRPO form follows DeepSeekMath's group-relative policy optimization, with the advantage normalized over grouped completions in the standard policy-gradient framing ([Shao et al., 2024](#ref-deepseekmath); [Sutton et al., 1999](#ref-policy-gradient)):
 
 $$
 r_i =
@@ -293,7 +293,7 @@ $$
 
 ## 6. Execution proof
 
-The Fugu (TRINITY) inference path was reproduced end-to-end: real `model_iter_60.npy`, real Qwen3-0.6B on an A800, SVF applied in `state_dict` order, evaluated against a 37-case fixture with known expected $(a, \rho)$ labels.
+The Fugu (TRINITY) inference path was reproduced end-to-end: real `model_iter_60.npy`, real Qwen3-0.6B on an A800, SVF applied in `state_dict` order, evaluated against a 37-case fixture with known expected $(a, \rho)$ labels. The local reproduction scripts are listed in [References](#references).
 
 | Input formatting                  | agent acc. | role acc. | joint   |
 | --------------------------------- | ---------- | --------- | ------- |
@@ -309,7 +309,7 @@ Against the best constant-guess null (always pick the modal class, $p_0 = 19/37$
 
 A few things in this disclosure are not directly confirmed, and I want to be explicit about which.
 
-The most-investigated point was what "sep" in sep-CMA-ES actually does. It is not Sakana's invention — it is the standard separable variant of Ros & Hansen (2008), which restricts the covariance to a diagonal, cutting cost from $O(N^2)$ storage / $O(N^3)$ eigendecomposition to $O(N)$. Probing pycma v4.4.4 directly settled the mechanism: `CMA_diagonal=True` does **not** keep a diagonal $C$ matrix — it freezes the sampler's $C$ at $I$ (`GaussStandardConstant`, "no update") and moves the per-coordinate adaptation into a step-size vector `sigma_vec`, so $x_i = m + \sigma\cdot\texttt{sigma\_vec}\odot z_i$ with $z_i\sim\mathcal N(0,I)$ — diagonal covariance in effect, implemented off the sampler. (The default mode is the full-$C$ `GaussFullSampler`; the `0*100*N/...` default string evaluates to $0$.) At Fugu's scale this matters in a concrete way: full CMA is **computationally infeasible** at $N=19456$ (an $N\times N$ matrix plus eigendecomposition), so sep is **required for feasibility**, not an optional refinement. And within 60 iterations even sep's `sigma_vec` barely diverges (std $\sim\!6\times10^{-4}$); the only quantity that moves materially is the **scalar** step size $\sigma$ ($0.03\to0.002$). The training therefore reduces, in practice, to an isotropic $(\mu/\mu_w,\lambda)$-ES: scalar step-size control plus fitness-weighted mean recombination, with the diagonal capability present but barely exercised at this budget. (Honest correction: an earlier draft read the SVF blocks' near-zero cross-correlation as evidence *for* a diagonal $C$ — it isn't; that is just what any mode yields when the covariance never moves. Repro: `probe_sep_cma.py`.)
+The most-investigated point was what "sep" in sep-CMA-ES actually does. It is not Sakana's invention — it is the standard separable variant of Ros and Hansen, which restricts the covariance to a diagonal, cutting cost from $O(N^2)$ storage / $O(N^3)$ eigendecomposition to $O(N)$ ([Ros and Hansen, 2008](#ref-ros-hansen-sepcma)). Probing pycma v4.4.4 directly settled the mechanism: `CMA_diagonal=True` does **not** keep a diagonal $C$ matrix — it freezes the sampler's $C$ at $I$ (`GaussStandardConstant`, "no update") and moves the per-coordinate adaptation into a step-size vector `sigma_vec`, so $x_i = m + \sigma\cdot\texttt{sigma\_vec}\odot z_i$ with $z_i\sim\mathcal N(0,I)$ — diagonal covariance in effect, implemented off the sampler. (The default mode is the full-$C$ `GaussFullSampler`; the `0*100*N/...` default string evaluates to $0$.) At Fugu's scale this matters in a concrete way: full CMA is **computationally infeasible** at $N=19456$ (an $N\times N$ matrix plus eigendecomposition), so sep is **required for feasibility**, not an optional refinement. And within 60 iterations even sep's `sigma_vec` barely diverges (std $\sim\!6\times10^{-4}$); the only quantity that moves materially is the **scalar** step size $\sigma$ ($0.03\to0.002$). The training therefore reduces, in practice, to an isotropic $(\mu/\mu_w,\lambda)$-ES: scalar step-size control plus fitness-weighted mean recombination, with the diagonal capability present but barely exercised at this budget. (Honest correction: an earlier draft read the SVF blocks' near-zero cross-correlation as evidence *for* a diagonal $C$ — it isn't; that is just what any mode yields when the covariance never moves. Repro: `probe_sep_cma.py`.)
 
 The training **ask/tell loop** is not in the shipped code (it lives in an un-released `experiments/with_training/` module). What §3.2 and `recovered_training_loop.py` give is a **reconstruction** — about 78% pinned by the trainer's signature, the eval-path job submission, the released config, and pycma defaults; the rest is labeled guesswork.
 
@@ -320,3 +320,14 @@ Everything else that's missing is either a **credential** (worker API keys — u
 ## 8. One-paragraph summary
 
 Fugu attaches a $\sim$19.5K-parameter trainable surface — a bias-free linear head $W_{\text{head}} \in \mathbb{R}^{(L+3)\times d}$ plus SVF singular-value offsets on 9 backbone matrices — to a frozen Qwen3-0.6B. The penultimate-token hidden state is mapped to worker (and role) logits; the selected frontier LLM does the actual work, and the orchestrator never decodes text. It is warm-started by KL-matching a temperature-softmax of measured per-worker rewards, then refined by separable CMA-ES directly on end-to-end task success $J(\theta)=\mathbb{E}_\tau[R(\tau)]$ — though at 19456-D over 60 iterations that reduces in practice to an isotropic step-size-adapted ES. Fugu-Ultra swaps the per-turn selector for a GRPO-trained 7B Conductor that emits a full topological-DAG workflow with isolated-but-shared agent memory. No worker weights are ever modified — the entire system is macro-level composition over heterogeneous, swappable APIs.
+
+## [References]
+
+- <a id="ref-sakana-fugu-report"></a>Sakana AI. 2026. "Sakana Fugu." Technical report. <https://sakana.ai/fugu>. Local source used here: `/root/openfugu/fugu/Fugu_technical_report.md`.
+- <a id="ref-trinity"></a>Jinglue Xu, Qi Sun, Peter Schwendeman, Stefan Nielsen, Edoardo Cetin, and Yujin Tang. 2026. "TRINITY: An Evolved LLM Coordinator." arXiv:2512.04695. <https://arxiv.org/abs/2512.04695>.
+- <a id="ref-conductor"></a>Stefan Nielsen, Edoardo Cetin, Peter Schwendeman, Qi Sun, Jinglue Xu, and Yujin Tang. 2026. "Learning to Orchestrate Agents in Natural Language with the Conductor." arXiv:2512.04388. <https://arxiv.org/abs/2512.04388>.
+- <a id="ref-transformer-squared"></a>Qi Sun, Edoardo Cetin, and Yujin Tang. 2025. "Transformer-Squared: Self-Adaptive LLMs." ICLR 2025. <https://openreview.net/forum?id=dh4t9qmcvK>.
+- <a id="ref-ros-hansen-sepcma"></a>Raymond Ros and Nikolaus Hansen. 2008. "A Simple Modification in CMA-ES Achieving Linear Time and Space Complexity." PPSN X. <https://doi.org/10.1007/978-3-540-87700-4_30>.
+- <a id="ref-deepseekmath"></a>Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, et al. 2024. "DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models." arXiv:2402.03300. <https://arxiv.org/abs/2402.03300>.
+- <a id="ref-policy-gradient"></a>Richard S. Sutton, David McAllester, Satinder Singh, and Yishay Mansour. 1999. "Policy Gradient Methods for Reinforcement Learning with Function Approximation." NeurIPS 1999.
+- Local reverse-engineering evidence: `/root/openfugu/handoff.md`, `/root/openfugu/ARCHITECTURE.md`, `/root/openfugu/verify_37.py`, `/root/openfugu/verify_trinity2.py`, `/root/openfugu/verify_margin.py`, `/root/openfugu/probe_sep_cma.py`, and `/root/openfugu/recovered_training_loop.py`.

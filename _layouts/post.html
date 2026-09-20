@@ -16,7 +16,10 @@ layout: default
   </p>
 </header>
 
-{% assign toc_items = content | split: '<h3 id="' %}
+{% assign toc_heading_level = page.toc_heading_level | default: 3 %}
+{% capture toc_heading_open %}<h{{ toc_heading_level }} id="{% endcapture %}
+{% capture toc_heading_close %}</h{{ toc_heading_level }}>{% endcapture %}
+{% assign toc_items = content | split: toc_heading_open %}
 
 <div class="post-layout">
   <aside class="post-toc{% unless toc_items.size > 1 %} post-toc--actions-only{% endunless %}">
@@ -27,7 +30,7 @@ layout: default
         <ol>
           {% for item in toc_items offset:1 %}
             {% assign heading_id = item | split: '"' | first %}
-            {% assign heading_text = item | split: '>' | slice: 1, 99 | join: '>' | split: '</h3>' | first | strip_html | strip %}
+            {% assign heading_text = item | split: '>' | slice: 1, 99 | join: '>' | split: toc_heading_close | first | strip_html | strip %}
             {% if heading_id and heading_text != "" %}
             <li><a href="#{{ heading_id }}">{{ heading_text }}</a></li>
             {% endif %}

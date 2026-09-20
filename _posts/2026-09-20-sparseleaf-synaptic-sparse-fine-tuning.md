@@ -907,6 +907,78 @@ Together, the SFT and RL results demonstrate a common learning interface. Superv
 
 The parameterization also determines what engineers must store, schedule, differentiate, and move. LoRA's trainable-parameter percentage compresses four different bills into one attractive number: arithmetic, memory traffic, batching, and persistent state. Coordinate sparsity changes the objects behind each bill: learned projection pairs become indexed connection values, and the support becomes reusable execution metadata.
 
+### Where the Memory Savings Actually Happen
+
+The pretrained network supplies the computation. Only the plastic connections carry trainable values, parameter gradients, and optimizer history.
+
+Let <span class="math-inline" markdown="0">\(N\)</span> be the number of base-weight values and <span class="math-inline" markdown="0">\(K\)</span> the number of selected coordinates. The storage representation follows the parameterization directly:
+
+<div class="math-display" markdown="0">
+\[
+w=w_0+P_S^\top\theta,
+\qquad
+w_0\in\mathbb R^N,\quad
+\theta\in\mathbb R^K.
+\]
+</div>
+
+The frozen base is stored once. The increment, its gradient, and its optimizer state are separate, coordinate-sized tensors. This places the savings at specific points in the training lifecycle.
+
+#### Weights: reuse the base, allocate precision to the increments
+
+The base retains its low-precision computation weights. A trainable vector holds the selected increments, and an FP32 master vector accumulates their updates before conversion to the computation dtype. Mixed-precision training uses master weights to preserve small updates across optimization steps; SparseLeaf allocates that precision to the connections that can change. The master copy therefore shrinks from <span class="math-inline" markdown="0">\(N\)</span> values to <span class="math-inline" markdown="0">\(K\)</span> values. [Mixed Precision Training](https://arxiv.org/abs/1710.03740)
+
+Multiple tasks can reuse the same immutable base and maintain independent increment vectors. Saving an adapter records its support and values, while the base remains a separately stored asset. Once a receiver has the same base and support, a new adapter version can be transmitted as a replacement value vector. The savings appear in trainable weight storage, task-specific checkpoints, and version payloads.
+
+#### Weight gradients: write the selected results directly
+
+For <span class="math-inline" markdown="0">\(Y=XW^\top\)</span> and <span class="math-inline" markdown="0">\(D=\partial\mathcal L/\partial Y\)</span>, full-parameter training forms <span class="math-inline" markdown="0">\(G_W=D^\top X\)</span>, with one gradient value per weight. SparseLeaf's backward operator instead writes
+
+<div class="math-display" markdown="0">
+\[
+(g_\theta)_k
+=\sum_t D_{t,i_k}X_{t,j_k},
+\qquad
+g_\theta\in\mathbb R^K.
+\]
+</div>
+
+Each selected connection contributes one dot product across token positions. The operator writes those results directly into a length-<span class="math-inline" markdown="0">\(K\)</span> gradient buffer. The frozen base has no parameter-gradient buffer; the increment vector receives the accumulated gradient. This matches autograd's distinction between differentiating through an operation and accumulating a gradient for one of its inputs. [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad)
+
+The saving begins at gradient generation: selected dot products replace the full weight-gradient multiplication, and <span class="math-inline" markdown="0">\(K\)</span> output writes replace <span class="math-inline" markdown="0">\(N\)</span>. Microbatch accumulation then operates on the same <span class="math-inline" markdown="0">\(K\)</span> entries. Data-parallel replicas with an aligned fixed support synchronize those entries in a common coordinate order. The layer's full input-gradient path continues to carry errors to earlier layers; the backward section below separates that computation from parameter-gradient generation.
+
+#### Optimizer state: keep history only where learning can happen
+
+Adam maintains a first moment and a second moment for each trainable value. With a sparse leaf, both histories have length <span class="math-inline" markdown="0">\(K\)</span>. The optimizer creates the master vector and moment vectors in the leaf's shape, updates them from its gradient, and writes back the new increment values. State allocation, per-step reads and writes, and optimizer checkpoints all follow the selected coordinates.
+
+Using BF16 computation values and parameter gradients, an FP32 master copy, and two FP32 Adam moments gives the following logical tensor accounting. ZeRO uses this same separation of weights, gradients, master weights, and moments to explain the memory cost of mixed-precision Adam. [ZeRO, §3.1](https://arxiv.org/html/1910.02054v3)
+
+| Tensor | Full-parameter training | SparseLeaf |
+|---|---:|---:|
+| Complete computation weights / frozen base | <span class="math-inline" markdown="0">\(2N\)</span> bytes | <span class="math-inline" markdown="0">\(2N\)</span> bytes |
+| Separate BF16 increments | — | <span class="math-inline" markdown="0">\(2K\)</span> bytes |
+| Parameter gradients | <span class="math-inline" markdown="0">\(2N\)</span> bytes | <span class="math-inline" markdown="0">\(2K\)</span> bytes |
+| FP32 master weights | <span class="math-inline" markdown="0">\(4N\)</span> bytes | <span class="math-inline" markdown="0">\(4K\)</span> bytes |
+| Adam first moment | <span class="math-inline" markdown="0">\(4N\)</span> bytes | <span class="math-inline" markdown="0">\(4K\)</span> bytes |
+| Adam second moment | <span class="math-inline" markdown="0">\(4N\)</span> bytes | <span class="math-inline" markdown="0">\(4K\)</span> bytes |
+| **Core tensor total** | **<span class="math-inline" markdown="0">\(16N\)</span> bytes** | **<span class="math-inline" markdown="0">\(2N+16K\)</span> bytes** |
+
+The full memory ledger adds coordinate metadata, activation storage, and operator workspace. An FP32 microbatch-accumulation buffer contributes another <span class="math-inline" markdown="0">\(4K\)</span> bytes while resident. In the core total above, the BF16 parameter-gradient buffer contributes <span class="math-inline" markdown="0">\(2K\)</span> bytes; accumulation and optimizer staging have their own lifetimes.
+
+Return to the opening <span class="math-inline" markdown="0">\(4096\times4096\)</span> matrix with <span class="math-inline" markdown="0">\(K=4096\)</span> selected connections. Full-parameter training uses **256 MiB** for the core tensors in the table. SparseLeaf uses **32 MiB for the base plus 64 KiB for the increment training state**: 8 KiB of increments, 8 KiB of gradients, 16 KiB of master weights, and 32 KiB for the two moments. Flat INT32 coordinates add 16 KiB; CSR/CSC execution metadata is a separate allocation.
+
+For standard LoRA with <span class="math-inline" markdown="0">\(P=\sum_\ell r_\ell(m_\ell+n_\ell)\)</span> factor values, the same accounting gives
+
+<div class="math-display" markdown="0">
+\[
+M_{\mathrm{LoRA,core}}=2N+16P,
+\qquad
+M_{\mathrm{SparseLeaf,core}}=2N+16K.
+\]
+</div>
+
+Coordinate metadata adds <span class="math-inline" markdown="0">\(B_S\)</span> to SparseLeaf's storage. Both representations reuse a frozen base. SparseLeaf makes the learning-state budget divisible into individual connections: removing one coordinate removes its increment, gradient, master value, and both moment entries. Every retained coordinate keeps an independent update direction. The memory budget follows the number of plastic connections while their combined update remains free to have high rank.
+
 ### From skinny GEMMs to indexed accumulation
 
 For <span class="math-inline" markdown="0">\(T\)</span> token rows, an unmerged LoRA layer computes
@@ -1304,3 +1376,6 @@ For a square layer with <span class="math-inline" markdown="0">\(M=I_d\)</span>,
 30. Yen, J.-N., et al. (2025). [LoRA Done RITE: Robust Invariant Transformation Equilibration for LoRA Optimization](https://arxiv.org/html/2410.20625). ICLR; arXiv:2410.20625.
 31. Paischer, F., Hauzenberger, L., Schmied, T., Alkin, B., Deisenroth, M. P., and Hochreiter, S. (2025). [Parameter Efficient Fine-tuning via Explained Variance Adaptation](https://arxiv.org/html/2410.07170). NeurIPS; arXiv:2410.07170.
 32. Wang, Z., Liang, J., He, R., Wang, Z., and Tan, T. (2025). [LoRA-Pro: Are Low-Rank Adapters Properly Optimized?](https://arxiv.org/html/2407.18242). ICLR; arXiv:2407.18242.
+33. Micikevicius, P., et al. (2018). [Mixed Precision Training](https://arxiv.org/abs/1710.03740). ICLR.
+34. PyTorch Contributors (2026). [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad). PyTorch 2.14 documentation.
+35. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. (2020). [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/html/1910.02054v3). arXiv:1910.02054, version 3.

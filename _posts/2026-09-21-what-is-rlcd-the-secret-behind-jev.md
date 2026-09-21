@@ -1,0 +1,492 @@
+---
+layout: post
+title: "What Is RLCD? The Secret Behind Jev"
+date: 2026-09-21T00:00:00.000+08:00
+permalink: /blog/what-is-rlcd-the-secret-behind-jev/
+categories: [Blog]
+tags: [jev, rlcd, reward-modeling, plackett-luce, calibration]
+math: true
+toc_heading_level: 2
+excerpt: "RLCD is a calibrated, schema-conditioned extension of pairwise reward modeling: Bradley–Terry becomes Plackett–Luce, and the reward model becomes Jev's typed decision interface."
+---
+
+*From pairwise reward modeling to calibrated, multiway decisions*
+
+Jev looks mysterious when viewed as an alternative to a language model. It becomes much simpler when viewed as the next step in reward modeling.
+
+The core idea is:
+
+<div class="math-display" markdown="0">
+\[
+\text{RLCD}
+=
+\text{multiway preference modeling}
++
+\text{probability calibration}
+\]
+</div>
+
+More specifically, RLCD is a schema-conditioned Plackett–Luce objective. Jev turns that objective into a product by adding typed outputs and parallel inference.
+
+That is the secret: the reward model is no longer hidden behind a generator. The reward model becomes the model.
+
+## Reward Modeling Started with a Scalar
+
+A conventional reward model receives a context <span class="math-inline" markdown="0">\(x\)</span> and a candidate answer <span class="math-inline" markdown="0">\(a\)</span>, then produces a scalar:
+
+<div class="math-display" markdown="0">
+\[
+r_\theta(x,a)\in\mathbb{R}
+\]
+</div>
+
+Outcome reward models score the final answer. Process reward models score individual reasoning steps. In both cases, the learned object is an absolute-looking number.
+
+The problem is that this number is not actually absolute.
+
+A reward of <span class="math-inline" markdown="0">\(0.8\)</span> does not have a stable meaning across problems, candidate pools, checkpoints, or model families. It is mainly useful for comparing candidates generated under similar conditions:
+
+<div class="math-display" markdown="0">
+\[
+r_\theta(x,a_1) &gt; r_\theta(x,a_2)
+\]
+</div>
+
+The operational signal was always relative preference. The scalar merely hid it.
+
+## PPRM Made the Preference Explicit
+
+LLaMA-Berry’s Pairwise Preference Reward Model, or PPRM, exposes the comparison directly.
+
+Given a problem <span class="math-inline" markdown="0">\(x\)</span> and two solutions <span class="math-inline" markdown="0">\(a_1\)</span> and <span class="math-inline" markdown="0">\(a_2\)</span>, PPRM answers:
+
+> Is the first answer better than the second answer?
+
+Its probability has the form:
+
+<div class="math-display" markdown="0">
+\[
+P(a_1 \succ a_2\mid x)
+=
+\frac{\exp u_\theta(x,a_1)}
+{\exp u_\theta(x,a_1)+\exp u_\theta(x,a_2)}
+\]
+</div>
+
+Equivalently:
+
+<div class="math-display" markdown="0">
+\[
+P(a_1 \succ a_2\mid x)
+=
+\sigma\left(
+u_\theta(x,a_1)-u_\theta(x,a_2)
+\right)
+\]
+</div>
+
+This is the Bradley–Terry model.
+
+LLaMA-Berry implements the comparison as a constrained language-model decision over `Yes` and `No` tokens. It trains the evaluator on almost 7.8 million mathematical-solution pairs and uses DPO to improve the pairwise prediction task. The essential change is conceptual: reward modeling becomes preference-probability modeling. See [the LLaMA-Berry paper](https://aclanthology.org/2025.naacl-long.375.pdf).
+
+PPRM still contains a latent scalar utility <span class="math-inline" markdown="0">\(u_\theta(x,a)\)</span>, but that utility is no longer presented as an absolute reward. It becomes meaningful through a normalized comparison.
+
+LLaMA-Berry subsequently uses Enhanced Borda Count to aggregate pairwise comparisons inside MCTS. That is downstream search machinery. EBC neither defines PPRM’s preference loss nor provides the bridge from PPRM to RLCD.
+
+The relevant lineage is simply:
+
+<div class="math-display" markdown="0">
+\[
+\text{scalar reward}
+\rightarrow
+\text{pairwise preference}
+\rightarrow
+\text{multiway preference}
+\rightarrow
+\text{calibrated decision}
+\]
+</div>
+
+## Plackett–Luce Is the Multiway PPRM
+
+PPRM compares two candidates. A real decision interface usually receives more than two.
+
+Let the candidate set be:
+
+<div class="math-display" markdown="0">
+\[
+A=\{a_1,a_2,\dots,a_K\}
+\]
+</div>
+
+Assign each candidate a context-dependent utility:
+
+<div class="math-display" markdown="0">
+\[
+u_i=u_\theta(x,a_i)
+\]
+</div>
+
+Then normalize all candidates together:
+
+<div class="math-display" markdown="0">
+\[
+P(a_i\mid x,A)
+=
+\frac{\exp u_i}
+{\sum_{j=1}^{K}\exp u_j}
+\]
+</div>
+
+This is the Luce choice model, also known as multinomial logit. It is the top-one form of the Plackett–Luce family.
+
+When <span class="math-inline" markdown="0">\(K=2\)</span>, it reduces exactly to Bradley–Terry:
+
+<div class="math-display" markdown="0">
+\[
+P(a_1\mid x,\{a_1,a_2\})
+=
+\frac{\exp u_1}{\exp u_1+\exp u_2}
+\]
+</div>
+
+PPRM is therefore the binary case of the same choice geometry.
+
+If the supervision contains a complete ranking
+
+<div class="math-display" markdown="0">
+\[
+a_{\pi_1}\succ a_{\pi_2}\succ\dots\succ a_{\pi_K},
+\]
+</div>
+
+the full Plackett–Luce likelihood repeatedly selects the next-best remaining candidate:
+
+<div class="math-display" markdown="0">
+\[
+P(\pi\mid x)
+=
+\prod_{t=1}^{K}
+\frac{\exp u_{\pi_t}}
+{\sum_{j=t}^{K}\exp u_{\pi_j}}
+\]
+</div>
+
+The corresponding loss is:
+
+<div class="math-display" markdown="0">
+\[
+\mathcal{L}_{\mathrm{PL}}
+=
+-\sum_{t=1}^{K}
+\log
+\frac{\exp u_{\pi_t}}
+{\sum_{j=t}^{K}\exp u_{\pi_j}}
+\]
+</div>
+
+When the label specifies only one correct choice <span class="math-inline" markdown="0">\(y\)</span>, the loss becomes:
+
+<div class="math-display" markdown="0">
+\[
+\mathcal{L}_{\mathrm{choice}}
+=
+-\log
+\frac{\exp u_y}
+{\sum_j\exp u_j}
+\]
+</div>
+
+That is the first stage of the Plackett–Luce likelihood: a multiway extension of PPRM.
+
+This is the mathematical center of RLCD.
+
+## RLCD Adds Calibration
+
+Plackett–Luce gives us a probability distribution, but normalization is not calibration.
+
+A softmax vector always sums to one. That does not mean a prediction reported as <span class="math-inline" markdown="0">\(0.8\)</span> is correct 80% of the time.
+
+Calibration adds that empirical meaning:
+
+<div class="math-display" markdown="0">
+\[
+P(Y=\hat{Y}\mid \hat{P}=p)\approx p
+\]
+</div>
+
+Across predictions assigned probability <span class="math-inline" markdown="0">\(0.8\)</span>, approximately 80% should be correct. This is also the contract TypeSafe gives for RLCD: Jev returns decisions and probabilities, and higher reported probabilities should correspond to higher observed accuracy. See [TypeSafe’s RLCD primer](https://docs.typesafe.ai/introduction/machine-learning-primer).
+
+A minimal implementation uses a proper scoring rule such as log loss:
+
+<div class="math-display" markdown="0">
+\[
+\mathcal{L}_{\mathrm{NLL}}=-\log p_y
+\]
+</div>
+
+or the Brier score:
+
+<div class="math-display" markdown="0">
+\[
+\mathcal{L}_{\mathrm{Brier}}
+=
+\sum_{i=1}^{K}
+\left(p_i-\mathbb{1}[i=y]\right)^2
+\]
+</div>
+
+A held-out calibration stage can then adjust the sharpness of the distribution:
+
+<div class="math-display" markdown="0">
+\[
+p_i
+=
+\frac{\exp(u_i/T)}
+{\sum_j\exp(u_j/T)}
+\]
+</div>
+
+Here <span class="math-inline" markdown="0">\(T\)</span> controls how concentrated the probabilities are without changing their ordering.
+
+This separates two objectives that ordinary reward modeling often conflates:
+
+- Ranking asks whether the best candidate appears first.
+- Calibration asks whether the model knows how often that decision is right.
+
+Automation needs both. Ranking selects an action; calibration determines whether software should execute it, defer it, or escalate it.
+
+The useful abstraction is:
+
+<div class="math-display" markdown="0">
+\[
+\text{RLCD}
+=
+\text{Plackett–Luce preference loss}
++
+\text{calibration constraint}
+\]
+</div>
+
+## Jev Turns the Reward Model into the Product
+
+In the conventional RLHF stack, the reward model is an internal component:
+
+<div class="math-display" markdown="0">
+\[
+\text{prompt}
+\rightarrow
+\text{generator}
+\rightarrow
+\text{candidate response}
+\rightarrow
+\text{reward model}
+\]
+</div>
+
+Users interact with the generator. The reward model only trains or evaluates it.
+
+Jev reverses that architecture:
+
+<div class="math-display" markdown="0">
+\[
+\text{state}
++
+\text{candidate schema}
+\rightarrow
+\text{calibrated decision distribution}
+\]
+</div>
+
+There is no need to generate an explanation and parse it back into an action. The evaluator itself becomes the runtime interface.
+
+Jev exposes three primitives:
+
+| Jev primitive | Preference-model interpretation |
+|---|---|
+| `Noul` | Binary Bradley–Terry decision between true and false |
+| `Choice` | Luce distribution over <span class="math-inline" markdown="0">\(K\)</span> unordered alternatives |
+| `Score` | Distribution over an ordered set of levels |
+
+A `Choice` returns the selected option, the complete probability distribution, and a confidence value. A `Score` returns a position along user-defined levels together with the distribution across those levels. A `Noul` returns the probability that a proposition is true. See [Jev’s primitive documentation](https://docs.typesafe.ai/primitives).
+
+These are not three unrelated capabilities. They are three schemas over the same underlying object:
+
+<div class="math-display" markdown="0">
+\[
+P(\text{typed outcome}\mid \text{state},\text{question},\text{candidate set})
+\]
+</div>
+
+Jev is therefore a reward model generalized from “Which answer is better?” to “Which typed outcome should the program select?”
+
+## Why Jev Can Run in Parallel
+
+Autoregressive language models represent an answer as a token sequence:
+
+<div class="math-display" markdown="0">
+\[
+P(y\mid x)
+=
+\prod_{t=1}^{T}
+P(y_t\mid x,y_{&lt;t})
+\]
+</div>
+
+Every token depends on the previous tokens. Latency grows with output length.
+
+A decision model already knows its output space. It only needs to estimate utilities and normalize them:
+
+<div class="math-display" markdown="0">
+\[
+x,A
+\rightarrow
+(u_1,\dots,u_K)
+\rightarrow
+(p_1,\dots,p_K)
+\]
+</div>
+
+No sentence has to be decoded.
+
+TypeSafe says Jev evaluates multiple questions sharing the same state independently and returns them in one request. Its launch announcement describes a new architecture, a parallel sampler, and RLCD as the three parts of the stack. For very high-cardinality choices, Jev uses a two-stage process: independent scoring followed by an explicit choice. See [TypeSafe’s Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
+
+This gives us a second decomposition:
+
+<div class="math-display" markdown="0">
+\[
+\text{Jev}
+=
+\text{RLCD}
++
+\text{typed schemas}
++
+\text{parallel serving}
+\]
+</div>
+
+RLCD explains what the model learns. The schema and sampler explain how that learned decision function becomes a fast software primitive.
+
+## RLCD Is Not a Third Kind of Reward Source
+
+TypeSafe presents RLHF, RLVR, and RLCD as three post-training paths. They are not three mutually exclusive mathematical categories.
+
+RLHF and RLVR primarily describe where the reward comes from:
+
+- RLHF: human preference.
+- RLVR: programmatically verifiable outcomes.
+
+RLCD describes what the model is trained to return:
+
+- a constrained decision;
+- a probability distribution;
+- calibrated uncertainty.
+
+Human comparisons can train RLCD. Verifiable outcomes can train RLCD. Synthetic judges can train RLCD. Logged production outcomes can train RLCD.
+
+The word *reinforcement learning* describes the broader post-training pipeline. The statistical heart of the objective is preference estimation under a proper probabilistic loss. PPO is not required to obtain this structure.
+
+The cleaner taxonomy is:
+
+| Method | Primary training signal | Product output |
+|---|---|---|
+| RLHF | Human preference | Generated response |
+| RLVR | Verifiable reward | Generated reasoning or answer |
+| RLCD | Decision outcome and calibration | Typed probability distribution |
+
+RLCD is defined by the output contract, not by a unique source of reward.
+
+## The Thesis Produces Testable Predictions
+
+If Jev is a calibrated, schema-conditioned Plackett–Luce model, its behavior should expose several measurable properties.
+
+### 1. Binary equivalence
+
+A two-option `Choice` and an equivalent `Noul` question should produce closely aligned probabilities:
+
+<div class="math-display" markdown="0">
+\[
+P(A\mid\{A,B\})
+\approx
+P(A\succ B)
+\]
+</div>
+
+### 2. Pairwise–multiway consistency
+
+For two candidates inside a larger set:
+
+<div class="math-display" markdown="0">
+\[
+\frac{P(a_i\mid A)}{P(a_j\mid A)}
+\approx
+\exp(u_i-u_j)
+\]
+</div>
+
+Their relative odds should match a direct pairwise comparison when the context and wording are held constant.
+
+### 3. Candidate-set sensitivity
+
+Vanilla Plackett–Luce satisfies independence of irrelevant alternatives. Adding an unrelated candidate should preserve the odds between existing candidates:
+
+<div class="math-display" markdown="0">
+\[
+\frac{P(a_i\mid A)}{P(a_j\mid A)}
+=
+\frac{P(a_i\mid A\cup\{a_k\})}
+{P(a_j\mid A\cup\{a_k\})}
+\]
+</div>
+
+Violations measure how strongly Jev’s utility encoder jointly represents the candidate set.
+
+### 4. Empirical calibration
+
+Predictions can be placed into probability bins. For the <span class="math-inline" markdown="0">\(0.8\)</span> bin, observed accuracy should approach <span class="math-inline" markdown="0">\(0.8\)</span>. This test distinguishes meaningful uncertainty from decorative softmax confidence.
+
+### 5. Order symmetry
+
+Permuting the order of candidate definitions should permute the returned probabilities without changing their values. Any systematic position effect reveals schema-order bias.
+
+These tests turn the RLCD interpretation into a falsifiable model of Jev’s behavior.
+
+## Conclusion
+
+Jev is not fundamentally a language model that learned to emit cleaner JSON. It is a preference model promoted into a software interface.
+
+PPRM provides the first step:
+
+<div class="math-display" markdown="0">
+\[
+\text{absolute reward}
+\rightarrow
+\text{pairwise preference probability}
+\]
+</div>
+
+Plackett–Luce provides the multiway extension:
+
+<div class="math-display" markdown="0">
+\[
+\text{pairwise preference}
+\rightarrow
+\text{distribution over candidate actions}
+\]
+</div>
+
+Calibration makes that distribution operational:
+
+<div class="math-display" markdown="0">
+\[
+\text{choice probability}
+\rightarrow
+\text{automation threshold}
+\]
+</div>
+
+Jev packages the result as typed, parallel inference. It is a calibrated multiway reward model served as an API.
+
+The deepest shift is not from one reinforcement-learning algorithm to another. It is from generating an unconstrained answer to estimating a calibrated distribution over actions already defined by software.
+
+Jev is what happens when the reward model stops grading the product and becomes the product.

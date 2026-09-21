@@ -561,7 +561,13 @@ Every selected connection is normalized using its own task gradient. The embeddi
 
 Together with LoRA+, these studies identify the optimization work introduced by factorization: choose a basis, calibrate its scale, balance its factors, and correct the geometry of their updates. SparseLeaf places the design decision directly on the support. Once the connections are selected, zero increments and zero Adam moments are enough to start learning in their native coordinates. **Preserve the pretrained computation, and spend the learning budget on independently changing its connections.**
 
-## 2. SparseLeaf: Give Existing Connections Plasticity
+<span id="2-sparseleaf-give-existing-connections-plasticity"></span>
+
+## 2. Where Sparse Plasticity Comes From
+
+A pretrained network stores a repertoire of features and transformations across many contexts. A particular input recruits a context-dependent part of that repertoire. A task then reinforces the connection changes that improve its predictions or rewards. **Dense capacity, selective activity, and sparse plasticity arise at different stages of the same learning process.**
+
+The formation process matters: pretraining shapes what each connection does, activation gates determine when it participates, task errors determine the direction of learning, and optimizer history determines how that pressure accumulates. Numerical precision determines which accumulated changes become visible in the computation weights.
 
 In a neural layer,
 
@@ -573,6 +579,188 @@ z_i=\sum_j W_{ij}x_j,
 </div>
 
 the scalar <span class="math-inline" markdown="0">\(W_{ij}\)</span> is the connection from input activation <span class="math-inline" markdown="0">\(x_j\)</span> to output unit <span class="math-inline" markdown="0">\(i\)</span>. Selecting that coordinate for training gives that connection the ability to change its strength.
+
+<span id="pretrained-computation-provides-the-substrate"></span>
+
+### 2.1 Pretraining builds selective feature use
+
+A feed-forward block can be written as a sum of feature contributions:
+
+<div class="math-display" markdown="0">
+\[
+h_j(x)=\phi(u_j^\top x),
+\qquad
+\operatorname{FFN}(x)=\sum_j h_j(x)v_j.
+\]
+</div>
+
+The input match <span class="math-inline" markdown="0">\(u_j^\top x\)</span> determines how strongly feature <span class="math-inline" markdown="0">\(j\)</span> contributes its output vector <span class="math-inline" markdown="0">\(v_j\)</span>. Across pretraining, features receive different signals because textual patterns have different frequencies, contexts, and relationships to prediction error. Geva and colleagues find that Transformer feed-forward keys detect textual patterns, while their associated values promote corresponding vocabulary predictions. Pretraining builds a collection of selectively invoked transformations. [Transformer Feed-Forward Layers Are Key-Value Memories, §§2–4](https://aclanthology.org/2021.emnlp-main.446/)
+
+Training also shapes the amount of activity itself. Li and colleagues observe ReLU activation rates falling from roughly 50% at initialization to around 3% in trained T5-Base. Their experiments find sparse activity even with random labels and random inputs; their initialization analysis identifies a gradient pressure toward smaller positive activations. [The Lazy Neuron Phenomenon, §§1.1 and 3](https://arxiv.org/abs/2210.06313)
+
+The squared-loss mechanism has a short derivation. Take fixed nonnegative activations <span class="math-inline" markdown="0">\(h\)</span>, target <span class="math-inline" markdown="0">\(y^\star\)</span>, and independent zero-mean readout columns <span class="math-inline" markdown="0">\(v_j\)</span>. With <span class="math-inline" markdown="0">\(\ell=\tfrac12\&#124;Vh-y^\star\&#124;_2^2\)</span>,
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E_V\!\left[\frac{\partial\ell}{\partial h_j}\right]
+=\mathbb E_V[v_j^\top(Vh-y^\star)]
+=\mathbb E_V[\&#124;v_j\&#124;_2^2]\,h_j.
+\]
+</div>
+
+At this random-readout starting point, positive activity contributes positive expected loss gradient. The local descent pressure is toward smaller activations. As training creates alignment between features and prediction targets, useful activity receives task-specific reinforcement. This supplies a concrete formation mechanism: initial suppression pressure followed by differentiated feature use.
+
+ReLU implements a hard gate, producing exact zeros for nonpositive inputs. A smooth gated MLP such as SwiGLU instead uses
+
+<div class="math-display" markdown="0">
+\[
+h_j(x)=\operatorname{SiLU}(a_j^\top x)\,(b_j^\top x).
+\]
+</div>
+
+Its activity is magnitude-selective. TEAL measures activation distributions concentrated around zero in Llama-3 and exploits their small-magnitude mass through thresholding. Its experiments obtain 40–50% model-wide activation sparsity across Llama-2, Llama-3, and Mistral with small reported quality changes. This is near-zero activity converted into explicit zeros. [Training-Free Activation Sparsity in Large Language Models, §§4.1 and 5](https://arxiv.org/html/2408.14690)
+
+The active pattern also depends on context. Deja Vu finds input-dependent subsets of MLP neurons and attention heads that reproduce dense-model behavior closely; different inputs recruit different subsets. **The model's breadth lives in the repertoire, while each input uses a selective combination.** [Deja Vu: Contextual Sparsity for Efficient LLMs at Inference Time, §3](https://proceedings.mlr.press/v202/liu23am.html)
+
+### 2.2 Activation gates shape connection-level learning
+
+Selective activity enters the learning rule multiplicatively. For a two-layer block <span class="math-inline" markdown="0">\(h=\phi(Ux)\)</span>, <span class="math-inline" markdown="0">\(y=Vh\)</span>, and output error <span class="math-inline" markdown="0">\(e=\partial\ell/\partial y\)</span>, the exact task gradients are
+
+<div class="math-display" markdown="0">
+\[
+\nabla_V\ell=e h^\top,
+\qquad
+\nabla_U\ell=
+\bigl[(V^\top e)\odot\phi'(Ux)\bigr]x^\top.
+\]
+</div>
+
+An inactive ReLU feature contributes a zero column to the output-weight gradient and a zero row to the input-weight gradient. The same gate controls its forward contribution and its local learning path. Smooth gates continuously modulate these paths through their values and derivatives.
+
+For a general connection, write <span class="math-inline" markdown="0">\(\delta_i=\partial\mathcal L/\partial z_i\)</span>. The native weight gradient is
+
+<div class="math-display" markdown="0">
+\[
+\frac{\partial\mathcal L}{\partial W_{ij}}
+=\delta_i x_j.
+\]
+</div>
+
+In matrix form, its single-position support obeys
+
+<div class="math-display" markdown="0">
+\[
+G=\delta x^\top,
+\qquad
+\operatorname{supp}(G)
+=\operatorname{supp}(\delta)\times\operatorname{supp}(x).
+\]
+</div>
+
+Input activity and backward error jointly locate the connection-level signal. Across tokens, these products add in the same weight coordinates. Changing active sets broadens the batch's gradient support, while signed contributions determine which directions reinforce or cancel. This leads from token-level activity to task-level plasticity.
+
+### 2.3 Task data and reward select persistent changes
+
+Across the task distribution, the persistent signal on a connection is
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E[\delta_i x_j].
+\]
+</div>
+
+A frequently active feature receives sustained pressure to change when its activity consistently coincides with a particular output correction. Contributions with opposite signs cancel; coherent correlations accumulate. For cross-entropy supervision, the logit error is <span class="math-inline" markdown="0">\(p-e_{y^\star}\)</span>: already well-predicted behavior supplies a small residual, while the task's remaining errors supply the correction.
+
+This connects update sparsity to what the pretrained model already knows. Mukherjee and colleagues identify training on data near the current policy distribution as a driver of sparse changes. Their rejection-sampling fine-tuning experiment reports 91.2% update sparsity for Qwen2.5-Math-7B. Reusing existing behavior and changing its probability can concentrate adaptation into a small part of the network. [Reinforcement Learning Finetunes Small Subnetworks, §6 and Table 5](https://arxiv.org/html/2505.11711v2)
+
+#### Reward selects useful changes
+
+For on-policy learning with a parameter-independent reward, let
+
+<div class="math-display" markdown="0">
+\[
+s_i=\frac{\partial\log\pi_W(y\mid x)}{\partial W_i}.
+\]
+</div>
+
+The [REINFORCE score-function estimator](https://link.springer.com/article/10.1007/BF00992696) connects expected reward to connection-level updates. The score-function identity gives <span class="math-inline" markdown="0">\(\mathbb E[s_i\mid x]=0\)</span>. With the conditional mean reward as a baseline, the expected policy gradient can be written as
+
+<div class="math-display" markdown="0">
+\[
+\frac{\partial J}{\partial W_i}
+=\mathbb E_x\left[
+\operatorname{Cov}_{y\sim\pi_W}(R,s_i\mid x)
+\right].
+\]
+</div>
+
+A connection receives a sustained reward-learning signal when its influence on action probabilities correlates with reward. Positive and negative contributions can cancel on other connections. This connects plasticity to the task's preferred changes in behavior.
+
+Sparse, high-rank updates are also visible in empirical analyses of RL-trained language models. Mukherjee and colleagues examined ten models and seven RL algorithms. In their BF16 checkpoint analysis, using a <span class="math-inline" markdown="0">\(10^{-5}\)</span> change tolerance, 68.5%–96.0% of parameters remained unchanged after RL. The four model–algorithm combinations in their rank table had mean update ranks of 99.2%–99.8% of the maximum. They also retrained identified subnetworks in DPO and PRIME experiments and recovered or improved the reported task scores. These observations put sparse plasticity and high-rank updates in the same empirical picture. [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models, §§3–4](https://arxiv.org/html/2505.11711v2)
+
+### 2.4 Optimizer history accumulates coherent pressure
+
+The optimizer adds a time axis to the connection-level signal. Write a coordinate's gradient as
+
+<div class="math-display" markdown="0">
+\[
+g_{i,t}=\mu_i+\xi_{i,t},
+\qquad
+\mathbb E[\xi_{i,t}]=0,
+\quad
+\operatorname{Var}(\xi_{i,t})=\sigma_i^2.
+\]
+</div>
+
+Adam's first moment accumulates signed direction, while its second moment records squared magnitude. A stationary moment-scale model substitutes <span class="math-inline" markdown="0">\(m_i\approx\mu_i\)</span> and <span class="math-inline" markdown="0">\(v_i\approx\mu_i^2+\sigma_i^2\)</span>. With bias corrections settled, and omitting <span class="math-inline" markdown="0">\(\epsilon\)</span> and weight decay in this model, the signal component has scale
+
+<div class="math-display" markdown="0">
+\[
+&#124;u_i&#124;_{\mathrm{signal}}
+\approx
+\eta\frac{&#124;\mu_i&#124;}{\sqrt{\mu_i^2+\sigma_i^2}}.
+\]
+</div>
+
+Consistent directions retain a large first moment. Reversing directions cancel in the first moment while continuing to contribute to the second. Multiplying both <span class="math-inline" markdown="0">\(\mu_i\)</span> and <span class="math-inline" markdown="0">\(\sigma_i\)</span> by the same positive constant leaves this ratio unchanged: directional consistency has its own role beyond raw gradient size. Finite-window fluctuations supply the stochastic component of the trajectory. The exact optimizer recurrence appears in Section 3. [Adam, Algorithm 1](https://arxiv.org/abs/1412.6980)
+
+### 2.5 Finite precision selects the visible weight changes
+
+Continuous optimization and computation-weight changes meet at a numerical representation. Let <span class="math-inline" markdown="0">\(w^\star_{i,t}\)</span> be an FP32 master weight, <span class="math-inline" markdown="0">\(u_{i,t}\)</span> its optimizer increment, and <span class="math-inline" markdown="0">\(Q_b\)</span> the BF16 rounding map. The change visible in the computation weights is
+
+<div class="math-display" markdown="0">
+\[
+\Delta\widetilde w_{i,t}
+=Q_b(w^\star_{i,t}+u_{i,t})-Q_b(w^\star_{i,t}).
+\]
+</div>
+
+Define the rounding cell <span class="math-inline" markdown="0">\(\mathcal C_q=\{w:Q_b(w)=q\}\)</span>. Remaining inside the same cell gives
+
+<div class="math-display" markdown="0">
+\[
+w^\star_{i,t},\;w^\star_{i,t}+u_{i,t}\in\mathcal C_q
+\quad\Longrightarrow\quad
+\Delta\widetilde w_{i,t}=0.
+\]
+</div>
+
+The master weight accumulates small changes continuously; the BF16 value moves when a rounding boundary is crossed. For example, starting at 1.25 and adding 0.001 to the master value each step leaves its BF16 image at 1.25 for the first three steps. On the fourth, the image becomes 1.2578125.
+
+PULSE measures this mechanism directly in RL training: approximately 99% of gradient entries are nonzero, while approximately 99% of BF16 weights remain unchanged from one step to the next. Its FP32-master experiment also retains highly sparse BF16-visible changes. This is representation-level sparsity produced by update scale and rounding. [Understanding and Exploiting Weight Update Sparsity, §3.3.1 and Appendix A.2](https://arxiv.org/html/2602.03839v1)
+
+The formation process now has explicit objects at each stage:
+
+| Stage | What becomes selective | Mechanism |
+|---|---|---|
+| Pretrained computation | Feature activity for an input | Learned input matches and activation gates |
+| Task learning | Persistent connection gradients | Correlation between activity and prediction error or reward |
+| Optimization over time | Accumulated directional change | Signed first moments and second-moment normalization |
+| Computation-weight representation | Coordinates with visible changes | Crossing numerical rounding boundaries |
+
+### 2.6 SparseLeaf turns selective plasticity into a constraint
+
+These mechanisms motivate a concrete design choice: make the locations of learning explicit. Preserve the full pretrained computation, assign independent trainable increments to selected connections, and place the optimizer's state on those increments.
 
 The synaptic perspective has a concrete biological motivation. In hippocampal neurons, Matsuzaki and colleagues induced potentiation at individual dendritic spines: structural enlargement and increased AMPA-receptor currents were localized to the stimulated spine, with neighboring spines unaffected. The individual connection can be a unit of plasticity. SparseLeaf takes that connection-level viewpoint as its organizing principle for fine-tuning. [Structural basis of long-term potentiation in single dendritic spines](https://pmc.ncbi.nlm.nih.gov/articles/PMC4158816/)
 
@@ -605,7 +793,7 @@ This separates two roles that are often bundled together. The dense network prov
 
 **Dense capacity. Sparse plasticity.**
 
-### Sparsity as an optimization constraint
+#### Sparsity as an optimization constraint
 
 The underlying optimization problem is
 
@@ -642,7 +830,7 @@ Placing nonzero entries on distinct rows and columns attains this maximum. In a 
 
 The support remains fixed during training, so both the accumulated change <span class="math-inline" markdown="0">\(W_t-W_0\)</span> and every step <span class="math-inline" markdown="0">\(W_{t+1}-W_t\)</span> stay within the same set of <span class="math-inline" markdown="0">\(K\)</span> connections. The sparsity budget organizes the entire learning trajectory.
 
-### Sparse changes are a learning primitive
+#### Sparse changes are a learning primitive
 
 Diff Pruning formulates adaptation as a sparse additive difference from frozen pretrained parameters, using a differentiable approximation to an <span class="math-inline" markdown="0">\(L_0\)</span> penalty to learn the support. Its structured variant modifies 0.5% of BERT-Large's parameters and matches its full-fine-tuning baseline's reported GLUE average of 80.6, excluding QNLI from that average. The full network remains available while the task-specific change is sparse. [Guo, Rush, and Kim, Table 1](https://aclanthology.org/2021.acl-long.378/)
 
@@ -839,53 +1027,21 @@ For a square layer with <span class="math-inline" markdown="0">\(M=I_d\)</span>,
 
 Once sparsity becomes an optimization constraint, support selection becomes a question about learning: which connections can jointly produce the changes a task requires?
 
-### Pretrained computation provides the substrate
+The formation process in Section 2 explains why task-relevant learning pressure is unevenly distributed. Support selection turns that unevenness into a task-level allocation of plasticity. An adjustment to an early connection can influence many downstream activations; adjustments across different layers can work together through the existing computation.
 
-A pretrained model already contains a large, organized system of features and transformations. Fine-tuning changes how that system responds to a task. An adjustment to an early connection can influence many downstream activations; adjustments across different layers can work together through the existing computation.
+### From per-input activity to a support for the whole task
 
-The learning signal on a connection has a precise form. For one input, write <span class="math-inline" markdown="0">\(\delta_i=\partial\mathcal L/\partial z_i\)</span>. Then
-
-<div class="math-display" markdown="0">
-\[
-\frac{\partial\mathcal L}{\partial W_{ij}}
-=\delta_i x_j.
-\]
-</div>
-
-Across the task distribution, the persistent signal is
+Activity changes with the input. A training support assigns connections the ability to learn across the task's inputs and throughout its optimization trajectory. For a sequence of weights, distinguish
 
 <div class="math-display" markdown="0">
 \[
-\mathbb E[\delta_i x_j].
+S_{\mathrm{step},t}=\operatorname{supp}(W_{t+1}-W_t),
+\qquad
+S_{\mathrm{ever}}(T)=\bigcup_{t&lt;T}S_{\mathrm{step},t}.
 \]
 </div>
 
-Input activity and output error jointly determine which connections receive consistent pressure to change. Adam's first moment accumulates direction over time, while its second moment tracks gradient magnitude. The learning history of each selected connection becomes part of its adaptive update rule.
-
-### Reward selects useful changes
-
-For on-policy learning with a parameter-independent reward, let
-
-<div class="math-display" markdown="0">
-\[
-s_i=\frac{\partial\log\pi_W(y\mid x)}{\partial W_i}.
-\]
-</div>
-
-The [REINFORCE score-function estimator](https://link.springer.com/article/10.1007/BF00992696) connects expected reward to connection-level updates. The score-function identity gives <span class="math-inline" markdown="0">\(\mathbb E[s_i\mid x]=0\)</span>. With the conditional mean reward as a baseline, the expected policy gradient can be written as
-
-<div class="math-display" markdown="0">
-\[
-\frac{\partial J}{\partial W_i}
-=\mathbb E_x\left[
-\operatorname{Cov}_{y\sim\pi_W}(R,s_i\mid x)
-\right].
-\]
-</div>
-
-A connection receives a sustained reward-learning signal when its influence on action probabilities correlates with reward. Positive and negative contributions can cancel on other connections. This connects plasticity to the task's preferred changes in behavior.
-
-Sparse, high-rank updates are also visible in empirical analyses of RL-trained language models. Mukherjee and colleagues examined ten models and seven RL algorithms. In their BF16 checkpoint analysis, using a <span class="math-inline" markdown="0">\(10^{-5}\)</span> change tolerance, 68.5%–96.0% of parameters remained unchanged after RL. The four model–algorithm combinations in their rank table had mean update ranks of 99.2%–99.8% of the maximum. They also retrained identified subnetworks in DPO and PRIME experiments and recovered or improved the reported task scores. These observations put sparse plasticity and high-rank updates in the same empirical picture. [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models, §§3–4](https://arxiv.org/html/2505.11711v2)
+Repeated changes on the same connections keep the union compact; visiting new connections grows it. Signed changes also determine the net checkpoint difference <span class="math-inline" markdown="0">\(W_T-W_0\)</span>. SparseLeaf makes the lifetime budget explicit: every step and the final increment remain inside the chosen <span class="math-inline" markdown="0">\(S\)</span>. The task-level question is how to choose that shared set of degrees of freedom.
 
 ### A support must cover the task's required changes
 
@@ -1361,7 +1517,7 @@ The engineering correspondence is direct: indexed accumulation replaces skinny p
 
 The 4,096-entry example at the beginning captures the central idea: an update can be small in coordinates and large in rank.
 
-The task construction turns that idea into a strict loss separation. The optimizer shows how the selected connections receive their native gradients. The allocation problem asks which connections are worth making plastic. The experiments show what those connections learn under supervision and reward.
+The task construction turns that idea into a strict loss separation. The formation process explains how selective feature activity, task-correlated errors, optimizer history, and numerical representation shape sparse learning. The optimizer shows how the selected connections receive their native gradients. The allocation problem asks which connections are worth making plastic. The experiments show what those connections learn under supervision and reward.
 
 Together, they suggest a different organizing principle for parameter-efficient learning: **spend the budget on choosing plastic connections, and preserve their freedom to create independent changes.**
 
@@ -1389,22 +1545,27 @@ The important unit is the plastic connection. Its location determines where a ch
 14. Meng, F., Wang, Z., and Zhang, M. (2024; revised 2025). [PiSSA: Principal Singular Values and Singular Vectors Adaptation of Large Language Models](https://arxiv.org/html/2404.02948). arXiv:2404.02948; NeurIPS 2024.
 15. Paischer, F., Hauzenberger, L., Schmied, T., Alkin, B., Deisenroth, M. P., and Hochreiter, S. (2025). [Parameter Efficient Fine-tuning via Explained Variance Adaptation](https://arxiv.org/html/2410.07170). NeurIPS; arXiv:2410.07170.
 16. Shuttleworth, R., Andreas, J., Torralba, A., and Sharma, P. (2024; revised 2025). [LoRA vs Full Fine-tuning: An Illusion of Equivalence](https://arxiv.org/html/2410.21228v3). arXiv:2410.21228, version 3.
-17. Matsuzaki, M., Honkura, N., Ellis-Davies, G. C. R., and Kasai, H. (2004). [Structural basis of long-term potentiation in single dendritic spines](https://pmc.ncbi.nlm.nih.gov/articles/PMC4158816/). *Nature*, 429, 761–766.
-18. Guo, D., Rush, A. M., and Kim, Y. (2021). [Parameter-Efficient Transfer Learning with Diff Pruning](https://aclanthology.org/2021.acl-long.378/). ACL-IJCNLP.
-19. Rios, J., Dognin, P., Luss, R., and Natesan Ramamurthy, K. (2025). [Sparsity May Be All You Need: Sparse Random Parameter Adaptation](https://aclanthology.org/2025.findings-emnlp.1013/). Findings of EMNLP.
-20. Kingma, D. P., and Ba, J. (2015). [Adam: A Method for Stochastic Optimization](https://arxiv.org/abs/1412.6980). ICLR.
-21. Duchi, J., Hazan, E., and Singer, Y. (2011). [Adaptive Subgradient Methods for Online Learning and Stochastic Optimization](https://www.jmlr.org/papers/v12/duchi11a.html). *Journal of Machine Learning Research*, 12, 2121–2159.
+17. Geva, M., Schuster, R., Berant, J., and Levy, O. (2021). [Transformer Feed-Forward Layers Are Key-Value Memories](https://aclanthology.org/2021.emnlp-main.446/). EMNLP.
+18. Li, Z., et al. (2023). [The Lazy Neuron Phenomenon: On Emergence of Activation Sparsity in Transformers](https://arxiv.org/abs/2210.06313). ICLR; arXiv:2210.06313.
+19. Liu, J., Ponnusamy, P., Cai, T., Guo, H., Kim, Y., and Athiwaratkun, B. (2025). [Training-Free Activation Sparsity in Large Language Models](https://arxiv.org/html/2408.14690). ICLR; arXiv:2408.14690.
+20. Liu, Z., et al. (2023). [Deja Vu: Contextual Sparsity for Efficient LLMs at Inference Time](https://proceedings.mlr.press/v202/liu23am.html). ICML, PMLR 202, 22137–22176.
+21. Mukherjee, S., Yuan, L., Hakkani-Tür, D., and Peng, H. (2025). [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models](https://arxiv.org/html/2505.11711v2). arXiv:2505.11711, version 2.
 22. Williams, R. J. (1992). [Simple statistical gradient-following algorithms for connectionist reinforcement learning](https://link.springer.com/article/10.1007/BF00992696). *Machine Learning*, 8, 229–256.
-23. Mukherjee, S., Yuan, L., Hakkani-Tür, D., and Peng, H. (2025). [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models](https://arxiv.org/html/2505.11711v2). arXiv:2505.11711, version 2.
-24. Jacot, A., Gabriel, F., and Hongler, C. (2018). [Neural Tangent Kernel: Convergence and Generalization in Neural Networks](https://papers.nips.cc/paper/2018/file/5a4be1fa34e62bb8a6ec6b91d2462f5a-Paper.pdf). NeurIPS.
-25. Nutini, J., Schmidt, M., Laradji, I., Friedlander, M., and Koepke, H. (2015). [Coordinate Descent Converges Faster with the Gauss-Southwell Rule Than Random Selection](https://proceedings.mlr.press/v37/nutini15.html). ICML.
-26. Sung, Y.-L., Nair, V., and Raffel, C. (2021). [Training Neural Networks with Fixed Sparse Masks](https://proceedings.neurips.cc/paper/2021/hash/cb2653f548f8709598e8b5156738cc51-Abstract.html). NeurIPS.
-27. Micikevicius, P., et al. (2018). [Mixed Precision Training](https://arxiv.org/abs/1710.03740). ICLR.
-28. PyTorch Contributors (2026). [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad). PyTorch 2.14 documentation.
-29. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. (2020). [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/html/1910.02054v3). arXiv:1910.02054, version 3.
-30. Verma, S., et al. (2024). [Seamlessly Deploying a Swarm of LoRA Adapters with NVIDIA NIM](https://developer.nvidia.com/blog/seamlessly-deploying-a-swarm-of-lora-adapters-with-nvidia-nim/). NVIDIA Technical Blog, June 7.
-31. Chen, G., He, Y., Hu, Y., Yuan, K., and Yuan, B. (2025). [CE-LoRA: Computation-Efficient LoRA Fine-Tuning for Language Models](https://arxiv.org/html/2502.01378). arXiv:2502.01378.
-32. Zhang, L., Zhang, L., Shi, S., Chu, X., and Li, B. (2023). [LoRA-FA: Memory-efficient Low-rank Adaptation for Large Language Models Fine-tuning](https://arxiv.org/html/2308.03303v1). arXiv:2308.03303, version 1.
-33. Chen, L., Ye, Z., Wu, Y., Zhuo, D., Ceze, L., and Krishnamurthy, A. (2023). [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547). arXiv:2310.18547; MLSys 2024.
-34. Sheng, Y., et al. (2023; revised 2024). [S-LoRA: Serving Thousands of Concurrent LoRA Adapters](https://arxiv.org/abs/2311.03285). arXiv:2311.03285; MLSys 2024.
-35. Kimi Team (2025; revised 2026). [Kimi K2: Open Agentic Intelligence](https://arxiv.org/html/2507.20534). arXiv:2507.20534.
+23. Kingma, D. P., and Ba, J. (2015). [Adam: A Method for Stochastic Optimization](https://arxiv.org/abs/1412.6980). ICLR.
+24. Miahi, E., and Belilovsky, E. (2026). [Understanding and Exploiting Weight Update Sparsity for Communication-Efficient Distributed RL](https://arxiv.org/html/2602.03839v1). arXiv:2602.03839, version 1.
+25. Matsuzaki, M., Honkura, N., Ellis-Davies, G. C. R., and Kasai, H. (2004). [Structural basis of long-term potentiation in single dendritic spines](https://pmc.ncbi.nlm.nih.gov/articles/PMC4158816/). *Nature*, 429, 761–766.
+26. Guo, D., Rush, A. M., and Kim, Y. (2021). [Parameter-Efficient Transfer Learning with Diff Pruning](https://aclanthology.org/2021.acl-long.378/). ACL-IJCNLP.
+27. Rios, J., Dognin, P., Luss, R., and Natesan Ramamurthy, K. (2025). [Sparsity May Be All You Need: Sparse Random Parameter Adaptation](https://aclanthology.org/2025.findings-emnlp.1013/). Findings of EMNLP.
+28. Duchi, J., Hazan, E., and Singer, Y. (2011). [Adaptive Subgradient Methods for Online Learning and Stochastic Optimization](https://www.jmlr.org/papers/v12/duchi11a.html). *Journal of Machine Learning Research*, 12, 2121–2159.
+29. Jacot, A., Gabriel, F., and Hongler, C. (2018). [Neural Tangent Kernel: Convergence and Generalization in Neural Networks](https://papers.nips.cc/paper/2018/file/5a4be1fa34e62bb8a6ec6b91d2462f5a-Paper.pdf). NeurIPS.
+30. Nutini, J., Schmidt, M., Laradji, I., Friedlander, M., and Koepke, H. (2015). [Coordinate Descent Converges Faster with the Gauss-Southwell Rule Than Random Selection](https://proceedings.mlr.press/v37/nutini15.html). ICML.
+31. Sung, Y.-L., Nair, V., and Raffel, C. (2021). [Training Neural Networks with Fixed Sparse Masks](https://proceedings.neurips.cc/paper/2021/hash/cb2653f548f8709598e8b5156738cc51-Abstract.html). NeurIPS.
+32. Micikevicius, P., et al. (2018). [Mixed Precision Training](https://arxiv.org/abs/1710.03740). ICLR.
+33. PyTorch Contributors (2026). [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad). PyTorch 2.14 documentation.
+34. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. (2020). [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/html/1910.02054v3). arXiv:1910.02054, version 3.
+35. Verma, S., et al. (2024). [Seamlessly Deploying a Swarm of LoRA Adapters with NVIDIA NIM](https://developer.nvidia.com/blog/seamlessly-deploying-a-swarm-of-lora-adapters-with-nvidia-nim/). NVIDIA Technical Blog, June 7.
+36. Chen, G., He, Y., Hu, Y., Yuan, K., and Yuan, B. (2025). [CE-LoRA: Computation-Efficient LoRA Fine-Tuning for Language Models](https://arxiv.org/html/2502.01378). arXiv:2502.01378.
+37. Zhang, L., Zhang, L., Shi, S., Chu, X., and Li, B. (2023). [LoRA-FA: Memory-efficient Low-rank Adaptation for Large Language Models Fine-tuning](https://arxiv.org/html/2308.03303v1). arXiv:2308.03303, version 1.
+38. Chen, L., Ye, Z., Wu, Y., Zhuo, D., Ceze, L., and Krishnamurthy, A. (2023). [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547). arXiv:2310.18547; MLSys 2024.
+39. Sheng, Y., et al. (2023; revised 2024). [S-LoRA: Serving Thousands of Concurrent LoRA Adapters](https://arxiv.org/abs/2311.03285). arXiv:2311.03285; MLSys 2024.
+40. Kimi Team (2025; revised 2026). [Kimi K2: Open Agentic Intelligence](https://arxiv.org/html/2507.20534). arXiv:2507.20534.

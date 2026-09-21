@@ -1,3 +1,14 @@
+- id: what-is-rlcd-the-secret-behind-jev
+  date: 2026-09-21
+  type: blog
+  title: "What Is RLCD? The Secret Behind Jev"
+  summary: "Technical analysis of Jev as a calibrated multiway preference model, connecting PPRM, Plackett–Luce, Brier calibration, typed decision heads, and state–question–candidate tree attention."
+  url: "/blog/what-is-rlcd-the-secret-behind-jev/"
+  tags:
+    - rlcd
+    - preference-modeling
+    - jev
+
 - id: how-fugu-is-implemented-a-technical-inspect
   date: 2026-06-22
   type: blog

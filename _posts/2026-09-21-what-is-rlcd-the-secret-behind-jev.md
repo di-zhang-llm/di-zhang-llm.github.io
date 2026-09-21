@@ -397,6 +397,8 @@ Jev is therefore a reward model generalized from “Which answer is better?” t
 
 ## Why Jev Can Run in Parallel
 
+Strip away the branding: Jev's **parallel sampler is sequence packing plus an attention mask**, followed by typed decision heads. This is the serving trick behind the speed claim.
+
 Autoregressive language models represent an answer as a token sequence:
 
 <div class="math-display" markdown="0">
@@ -424,9 +426,65 @@ x,A
 
 No sentence has to be decoded.
 
-TypeSafe says Jev evaluates multiple questions sharing the same state independently and returns them in one request. Its launch announcement describes a new architecture, a parallel sampler, and RLCD as the three parts of the stack. For very high-cardinality choices, Jev uses a two-stage process: independent scoring followed by an explicit choice. See [TypeSafe’s Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
+Now pack the shared state and all questions into one sequence:
 
-This gives us a second decomposition:
+<div class="math-display" markdown="0">
+\[
+Z
+=
+[S;Q_1;A_1;\mathrm{SEP};Q_2;A_2;\mathrm{SEP};\dots;Q_m;A_m]
+\]
+</div>
+
+Here, <span class="math-inline" markdown="0">\(S\)</span> is the shared state, <span class="math-inline" markdown="0">\(Q_q\)</span> is question <span class="math-inline" markdown="0">\(q\)</span>, and <span class="math-inline" markdown="0">\(A_q\)</span> is its candidate set. A block attention mask makes the packed sequence behave like several isolated evaluations. Let <span class="math-inline" markdown="0">\(s(i)=0\)</span> for a state token and <span class="math-inline" markdown="0">\(s(i)=q\)</span> for a token in question block <span class="math-inline" markdown="0">\(q\)</span>. Then the structural part of the mask is:
+
+<div class="math-display" markdown="0">
+\[
+M_{ij}
+=
+\begin{cases}
+0, &amp; s(j)=0\ \text{or}\ s(i)=s(j),\\
+-\infty, &amp; \text{otherwise}.
+\end{cases}
+\]
+</div>
+
+Each question can read the common state and its own candidates. It cannot read another question's block. For a causal backbone, this mask is simply combined with the ordinary causal mask:
+
+<div class="math-display" markdown="0">
+\[
+\operatorname{Attn}(Q,K,V;M)
+=
+\operatorname{softmax}\!\left(\frac{QK^{\top}}{\sqrt d}+M\right)V
+\]
+</div>
+
+The result is one accelerator-friendly forward pass that produces every question's logits together. Packing avoids repeatedly sending and separately encoding the same state. The mask prevents cross-question contamination. Typed heads turn the resulting hidden states into `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token sampling loop.
+
+<figure id="figure-parallel-sampler" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg" alt="Diagram showing Jev's parallel sampler as a packed sequence with one shared-state block, three isolated question blocks, a block attention mask, and three probability outputs produced in one forward pass." width="1600" height="980" loading="lazy" decoding="async">
+<figcaption>Figure 6. The parallel sampler reduces to standard Transformer machinery: pack the questions behind one shared state, mask cross-question attention, and emit all typed distributions in one forward pass.</figcaption>
+</figure>
+
+This behavior is exactly the contract in [TypeSafe's documentation](https://docs.typesafe.ai/introduction): questions share the same state, are evaluated independently, and return in parallel. The mechanism itself is established Transformer engineering. Sequence packing with attention masks that prevent cross-contamination was already documented as a general throughput technique in the [sequence-packing literature](https://arxiv.org/abs/2107.02027).
+
+TypeSafe's launch post names a “new model architecture” and a “parallel sampler,” but it publishes no new attention operator, no sampler algorithm, no complexity result, and no ablation that isolates a novel sampling mechanism. A real sampling breakthrough would make those artifacts the center of the announcement. They are absent. What remains is a productized composition of familiar primitives:
+
+<div class="math-display" markdown="0">
+\[
+\text{parallel sampler}
+=
+\text{packing}
++
+\text{attention mask}
++
+\text{typed decision heads}
+\]
+</div>
+
+For very high-cardinality choices, Jev adds a two-stage procedure: score candidates independently, then make an explicit choice. That is another scheduling decomposition, not a new sampling law. See [TypeSafe's Jev announcement](https://typesafe.ai/blog/introducing-system-one-models-and-jev).
+
+The complete system decomposition is therefore:
 
 <div class="math-display" markdown="0">
 \[
@@ -436,11 +494,13 @@ This gives us a second decomposition:
 +
 \text{typed schemas}
 +
-\text{parallel serving}
+\text{packing}
++
+\text{attention masks}
 \]
 </div>
 
-RLCD explains what the model learns. The schema and sampler explain how that learned decision function becomes a fast software primitive.
+RLCD explains what the model learns. Packing and masking explain how the learned decision function is served efficiently. The engineering is useful. It is not a new class of sampler.
 
 ## RLCD Is Not a Third Kind of Reward Source
 

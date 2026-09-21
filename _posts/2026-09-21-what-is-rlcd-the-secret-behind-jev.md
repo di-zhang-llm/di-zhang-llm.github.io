@@ -4,7 +4,7 @@ title: "What Is RLCD? The Secret Behind Jev"
 date: 2026-09-21T00:00:00.000+08:00
 permalink: /blog/what-is-rlcd-the-secret-behind-jev/
 categories: [Blog]
-tags: [jev, rlcd, reward-modeling, plackett-luce, calibration]
+tags: [jev, rlcd, reward-modeling, plackett-luce, calibration, brier-score]
 math: true
 toc_heading_level: 2
 image: "/images/blog/what-is-rlcd-the-secret-behind-jev/01-rlcd-lineage.png"
@@ -236,18 +236,72 @@ A minimal implementation uses a proper scoring rule such as log loss:
 \]
 </div>
 
-or the Brier score:
+### Brier calibration: confidence gets a price
+
+The Brier score makes the calibration objective concrete. For a binary `Noul` decision, let <span class="math-inline" markdown="0">\(p=P(Y=1\mid x)\)</span> and <span class="math-inline" markdown="0">\(y\in\{0,1\}\)</span>. The score is:
 
 <div class="math-display" markdown="0">
 \[
-\mathcal{L}_{\mathrm{Brier}}
+\operatorname{BS}(p,y)=(p-y)^2
+\]
+</div>
+
+If the model reports <span class="math-inline" markdown="0">\(p=0.8\)</span>, it receives a score of <span class="math-inline" markdown="0">\(0.04\)</span> when the event occurs and <span class="math-inline" markdown="0">\(0.64\)</span> when it does not. The confidently wrong forecast costs sixteen times as much as the confidently correct one.
+
+This is why the Brier score fits a decision model. It is a strictly proper scoring rule: in expectation, the model minimizes the score by reporting the true conditional probability instead of gaming the threshold. The score was introduced for probabilistic forecasts by [Glenn Brier](https://journals.ametsoc.org/view/journals/mwre/78/1/1520-0493_1950_078_0001_vofeit_2_0_co_2.xml); its role as a proper scoring rule is developed by [Gneiting and Raftery](https://doi.org/10.1198/016214506000001437).
+
+For a multiway `Choice`, the score extends to the full probability vector. Using the normalization that makes the two-class case match the binary formula:
+
+<div class="math-display" markdown="0">
+\[
+\operatorname{BS}(\mathbf{p},y)
 =
+\frac{1}{2}
 \sum_{i=1}^{K}
 \left(p_i-\mathbb{1}[i=y]\right)^2
 \]
 </div>
 
-A held-out calibration stage can then adjust the sharpness of the distribution:
+This matters because top-1 accuracy discards probability quality. Two models can choose the same action while reporting <span class="math-inline" markdown="0">\(0.55\)</span> and <span class="math-inline" markdown="0">\(0.99\)</span>. Once outcomes arrive, Brier score tells us whether that extra confidence was earned.
+
+For binary outcomes, the [Murphy decomposition](https://doi.org/10.1175/1520-0450%281973%29012%3C0595%3AANVPOT%3E2.0.CO%3B2) separates the mean score into three terms:
+
+<div class="math-display" markdown="0">
+\[
+\operatorname{BS}
+=
+\operatorname{REL}
+-
+\operatorname{RES}
++
+\operatorname{UNC}
+\]
+</div>
+
+- Reliability <span class="math-inline" markdown="0">\(\operatorname{REL}\)</span> measures the gap between reported probabilities and observed frequencies. Lower is better.
+- Resolution <span class="math-inline" markdown="0">\(\operatorname{RES}\)</span> measures whether the model separates cases with different outcome rates. Higher is better.
+- Uncertainty <span class="math-inline" markdown="0">\(\operatorname{UNC}\)</span> is the base-rate difficulty of the evaluation set. It is fixed when models are compared on the same data.
+
+A lower Brier score can therefore come from better calibration, better separation of easy and hard cases, or both. A constant base-rate predictor can be calibrated while having zero resolution; Brier exposes that weakness.
+
+<figure id="figure-brier-calibration" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/03-brier-calibration.svg" alt="Three-panel diagram showing the Brier penalty for a correct and incorrect 0.8 forecast, the reliability-resolution-uncertainty decomposition, and an RLCD calibration loop from logged outcomes to execution policy." width="1600" height="920" loading="lazy" decoding="async">
+<figcaption>Figure 3. Brier score prices confidence, decomposes forecast quality, and closes the loop from observed outcomes to an operational decision policy.</figcaption>
+</figure>
+
+An RLCD implementation can use Brier score twice: as a training loss for the probability head and as a held-out objective for post-hoc calibration. With temperature scaling, the calibration parameter can be selected directly on validation outcomes:
+
+<div class="math-display" markdown="0">
+\[
+T^*
+=
+\arg\min_{T&gt;0}
+\sum_{n=1}^{N}
+\operatorname{BS}\!\left(\mathbf{p}^{(T)}(x_n),y_n\right)
+\]
+</div>
+
+Temperature scaling then adjusts the sharpness of the distribution:
 
 <div class="math-display" markdown="0">
 \[
@@ -258,7 +312,7 @@ p_i
 \]
 </div>
 
-Here <span class="math-inline" markdown="0">\(T\)</span> controls how concentrated the probabilities are without changing their ordering.
+Here <span class="math-inline" markdown="0">\(T\)</span> controls how concentrated the probabilities are without changing their ordering. Brier is the objective; temperature scaling is the calibrator. One measures probability quality, while the other changes the distribution.
 
 This separates two objectives that ordinary reward modeling often conflates:
 
@@ -281,7 +335,7 @@ The useful abstraction is:
 
 <figure id="figure-calibration-control" class="graf graf--figure">
 <img src="/images/blog/what-is-rlcd-the-secret-behind-jev/03-calibration-control-signal.svg" alt="Conceptual reliability diagram followed by a decision policy that gathers context, escalates, or executes according to calibrated confidence." width="1600" height="920" loading="lazy" decoding="async">
-<figcaption>Figure 3. Calibration attaches empirical meaning to confidence, allowing application-specific policies to decide when to gather context, escalate, or execute. The reliability curve is conceptual, not a Jev benchmark.</figcaption>
+<figcaption>Figure 4. Calibration attaches empirical meaning to confidence, allowing application-specific policies to decide when to gather context, escalate, or execute. The reliability curve is conceptual, not a Jev benchmark.</figcaption>
 </figure>
 
 ## Jev Turns the Reward Model into the Product
@@ -338,7 +392,7 @@ Jev is therefore a reward model generalized from “Which answer is better?” t
 
 <figure id="figure-reward-model-product" class="graf graf--figure">
 <img src="/images/blog/what-is-rlcd-the-secret-behind-jev/04-reward-model-as-product.svg" alt="Architecture comparison showing a conventional RLHF reward model behind a text generator and Jev serving the evaluator directly as typed Noul, Choice, and Score outputs." width="1600" height="940" loading="lazy" decoding="async">
-<figcaption>Figure 4. Conventional stacks use the reward model behind the generator. Jev serves the evaluator itself: state and schema in, typed probability distributions out.</figcaption>
+<figcaption>Figure 5. Conventional stacks use the reward model behind the generator. Jev serves the evaluator itself: state and schema in, typed probability distributions out.</figcaption>
 </figure>
 
 ## Why Jev Can Run in Parallel
@@ -464,7 +518,7 @@ Violations measure how strongly Jev’s utility encoder jointly represents the c
 
 ### 4. Empirical calibration
 
-Predictions can be placed into probability bins. For the <span class="math-inline" markdown="0">\(0.8\)</span> bin, observed accuracy should approach <span class="math-inline" markdown="0">\(0.8\)</span>. This test distinguishes meaningful uncertainty from decorative softmax confidence.
+Predictions can be placed into probability bins. For the <span class="math-inline" markdown="0">\(0.8\)</span> bin, observed accuracy should approach <span class="math-inline" markdown="0">\(0.8\)</span>. For `Noul`, report the reliability curve, mean Brier score, and Murphy decomposition together. For `Choice`, report multiclass Brier score and classwise reliability. These views distinguish a useful calibrated model from one that stays safe by predicting the base rate for every case.
 
 ### 5. Order symmetry
 

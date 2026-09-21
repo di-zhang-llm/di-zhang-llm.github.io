@@ -426,30 +426,42 @@ x,A
 
 No sentence has to be decoded.
 
-Now pack the shared state and all questions into one sequence:
+Now pack the shared state, questions, and candidate branches into one sequence:
 
 <div class="math-display" markdown="0">
 \[
 Z
 =
-[S;Q_1;A_1;\mathrm{SEP};Q_2;A_2;\mathrm{SEP};\dots;Q_m;A_m]
+[S;Q_1;C_{1,1};\dots;C_{1,K_1};Q_2;C_{2,1};\dots;C_{m,K_m}]
 \]
 </div>
 
-Here, <span class="math-inline" markdown="0">\(S\)</span> is the shared state, <span class="math-inline" markdown="0">\(Q_q\)</span> is question <span class="math-inline" markdown="0">\(q\)</span>, and <span class="math-inline" markdown="0">\(A_q\)</span> is its candidate set. A block attention mask makes the packed sequence behave like several isolated evaluations. Let <span class="math-inline" markdown="0">\(s(i)=0\)</span> for a state token and <span class="math-inline" markdown="0">\(s(i)=q\)</span> for a token in question block <span class="math-inline" markdown="0">\(q\)</span>. Then the structural part of the mask is:
+The packed sequence is only the physical layout. Its logical layout is a tree:
 
 <div class="math-display" markdown="0">
 \[
-M_{ij}
+S
+\rightarrow
+Q_q
+\rightarrow
+C_{q,k}
+\]
+</div>
+
+The attention mask preserves that tree. A question reads the shared state and itself. A candidate reads the shared state, its own question, and its own candidate tokens. It cannot read another question or a sibling candidate. Let <span class="math-inline" markdown="0">\(v(i)\)</span> denote the tree node containing token <span class="math-inline" markdown="0">\(i\)</span>, and let <span class="math-inline" markdown="0">\(v(j)\preceq v(i)\)</span> mean that <span class="math-inline" markdown="0">\(v(j)\)</span> is an ancestor of, or identical to, <span class="math-inline" markdown="0">\(v(i)\)</span>. Then:
+
+<div class="math-display" markdown="0">
+\[
+M^{\mathrm{tree}}_{ij}
 =
 \begin{cases}
-0, &amp; s(j)=0\ \text{or}\ s(i)=s(j),\\
+0, &amp; v(j)\preceq v(i),\\
 -\infty, &amp; \text{otherwise}.
 \end{cases}
 \]
 </div>
 
-Each question can read the common state and its own candidates. It cannot read another question's block. For a causal backbone, this mask is simply combined with the ordinary causal mask:
+For a causal backbone, this structural mask is combined with causal order *inside each branch*. Position IDs reset at every branch: all questions start after the same state prefix, and all candidates under a question start after the same state-plus-question prefix. Candidate <span class="math-inline" markdown="0">\(C_{q,2}\)</span> therefore gains no information merely because it was packed after <span class="math-inline" markdown="0">\(C_{q,1}\)</span>.
 
 <div class="math-display" markdown="0">
 \[
@@ -459,11 +471,11 @@ Each question can read the common state and its own candidates. It cannot read a
 \]
 </div>
 
-The result is one accelerator-friendly forward pass that produces every question's logits together. Packing avoids repeatedly sending and separately encoding the same state. The mask prevents cross-question contamination. Typed heads turn the resulting hidden states into `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token sampling loop.
+The result is one accelerator-friendly forward pass that produces every candidate score together. Packing removes repeated prefixes. Tree attention prevents cross-question and cross-candidate contamination. Typed heads normalize those scores into `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token generation loop.
 
 <figure id="figure-parallel-sampler" class="graf graf--figure">
-<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg" alt="Diagram showing Jev's parallel sampler as a packed sequence with one shared-state block, three isolated question blocks, a block attention mask, and three probability outputs produced in one forward pass." width="1600" height="980" loading="lazy" decoding="async">
-<figcaption>Figure 6. The parallel sampler reduces to standard Transformer machinery: pack the questions behind one shared state, mask cross-question attention, and emit all typed distributions in one forward pass.</figcaption>
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg" alt="Tree attention diagram showing a shared state branching into questions and isolated candidates, paired with an attention matrix in which each candidate reads only its ancestors and itself." width="1600" height="980" loading="lazy" decoding="async">
+<figcaption>Figure 6. The packed token buffer is logically a tree: state → question → candidate. The mask exposes only a branch's ancestral path, so all candidates can be scored in one forward pass without seeing their siblings.</figcaption>
 </figure>
 
 This behavior is exactly the contract in [TypeSafe's documentation](https://docs.typesafe.ai/introduction): questions share the same state, are evaluated independently, and return in parallel. The mechanism itself is established Transformer engineering. Sequence packing with attention masks that prevent cross-contamination was already documented as a general throughput technique in the [sequence-packing literature](https://arxiv.org/abs/2107.02027).

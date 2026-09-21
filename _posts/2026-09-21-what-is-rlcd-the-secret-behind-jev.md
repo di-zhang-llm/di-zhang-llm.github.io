@@ -7,6 +7,7 @@ categories: [Blog]
 tags: [jev, rlcd, reward-modeling, plackett-luce, calibration]
 math: true
 toc_heading_level: 2
+image: "/images/blog/what-is-rlcd-the-secret-behind-jev/01-rlcd-lineage.png"
 excerpt: "RLCD is a calibrated, schema-conditioned extension of pairwise reward modeling: Bradley–Terry becomes Plackett–Luce, and the reward model becomes Jev's typed decision interface."
 ---
 
@@ -29,6 +30,11 @@ The core idea is:
 More specifically, RLCD is a schema-conditioned Plackett–Luce objective. Jev turns that objective into a product by adding typed outputs and parallel inference.
 
 That is the secret: the reward model is no longer hidden behind a generator. The reward model becomes the model.
+
+<figure id="figure-rlcd-lineage" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/01-rlcd-lineage.svg" alt="Four-stage diagram showing scalar reward becoming pairwise preference, multiway choice, and finally a calibrated decision served through the Jev API." width="1600" height="900" loading="eager" fetchpriority="high" decoding="async">
+<figcaption>Figure 1. The learned object changes at each step: a scalar reward becomes a preference, the preference becomes a multiway distribution, and calibration turns that distribution into a decision interface.</figcaption>
+</figure>
 
 ## Reward Modeling Started with a Scalar
 
@@ -201,6 +207,11 @@ That is the first stage of the Plackett–Luce likelihood: a multiway extension 
 
 This is the mathematical center of RLCD.
 
+<figure id="figure-pairwise-multiway" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/02-pairwise-to-multiway.svg" alt="Side-by-side diagram of Bradley–Terry pairwise preference and Luce multiway choice sharing the same latent-utility normalization." width="1600" height="920" loading="lazy" decoding="async">
+<figcaption>Figure 2. Bradley–Terry and PPRM are the two-candidate case of the same Luce choice geometry. Plackett–Luce extends that normalization from one choice to a complete or partial ranking.</figcaption>
+</figure>
+
 ## RLCD Adds Calibration
 
 Plackett–Luce gives us a probability distribution, but normalization is not calibration.
@@ -268,6 +279,11 @@ The useful abstraction is:
 \]
 </div>
 
+<figure id="figure-calibration-control" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/03-calibration-control-signal.svg" alt="Conceptual reliability diagram followed by a decision policy that gathers context, escalates, or executes according to calibrated confidence." width="1600" height="920" loading="lazy" decoding="async">
+<figcaption>Figure 3. Calibration attaches empirical meaning to confidence, allowing application-specific policies to decide when to gather context, escalate, or execute. The reliability curve is conceptual, not a Jev benchmark.</figcaption>
+</figure>
+
 ## Jev Turns the Reward Model into the Product
 
 In the conventional RLHF stack, the reward model is an internal component:
@@ -319,6 +335,11 @@ P(\text{typed outcome}\mid \text{state},\text{question},\text{candidate set})
 </div>
 
 Jev is therefore a reward model generalized from “Which answer is better?” to “Which typed outcome should the program select?”
+
+<figure id="figure-reward-model-product" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/04-reward-model-as-product.svg" alt="Architecture comparison showing a conventional RLHF reward model behind a text generator and Jev serving the evaluator directly as typed Noul, Choice, and Score outputs." width="1600" height="940" loading="lazy" decoding="async">
+<figcaption>Figure 4. Conventional stacks use the reward model behind the generator. Jev serves the evaluator itself: state and schema in, typed probability distributions out.</figcaption>
+</figure>
 
 ## Why Jev Can Run in Parallel
 

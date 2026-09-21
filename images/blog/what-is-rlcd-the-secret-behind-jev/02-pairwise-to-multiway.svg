@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+  <title id="title">PPRM is the two-candidate case of multiway choice</title>
+  <desc id="desc">A side-by-side comparison of Bradley–Terry pairwise preference and Luce multiway choice, showing that both score latent utilities and normalize them into probabilities.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="9" stdDeviation="13" flood-color="#0f172a" flood-opacity="0.08"/>
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <linearGradient id="bridge" x1="0" x2="1">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1600" height="920" fill="#f8fafc"/>
+  <path d="M0 0 H1600 V180 C1260 245 1020 85 725 155 C430 225 225 250 0 175 Z" fill="#eef2ff"/>
+
+  <g font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="80" y="82" fill="#0f172a" font-size="52" font-weight="700">PPRM is the K = 2 case</text>
+    <text x="82" y="128" fill="#475569" font-size="26">Bradley–Terry and Plackett–Luce share the same latent-utility geometry</text>
+
+    <g filter="url(#shadow)">
+      <rect x="72" y="205" width="670" height="570" rx="28" fill="#ffffff" stroke="#bfdbfe" stroke-width="2"/>
+    </g>
+    <text x="112" y="264" fill="#2563eb" font-size="22" font-weight="700" letter-spacing="2">PAIRWISE · BRADLEY–TERRY</text>
+    <text x="112" y="310" fill="#0f172a" font-size="34" font-weight="700">Two candidates, one comparison</text>
+
+    <circle cx="210" cy="430" r="64" fill="#dbeafe" stroke="#60a5fa" stroke-width="3"/>
+    <circle cx="420" cy="430" r="64" fill="#eff6ff" stroke="#93c5fd" stroke-width="3"/>
+    <text x="210" y="444" fill="#1e3a8a" font-size="38" font-weight="700" text-anchor="middle">A</text>
+    <text x="420" y="444" fill="#1e3a8a" font-size="38" font-weight="700" text-anchor="middle">B</text>
+    <rect x="155" y="521" width="110" height="54" rx="27" fill="#eff6ff"/>
+    <rect x="365" y="521" width="110" height="54" rx="27" fill="#eff6ff"/>
+    <text x="210" y="556" fill="#1e40af" font-size="27" font-family="Georgia, serif" text-anchor="middle">uA</text>
+    <text x="420" y="556" fill="#1e40af" font-size="27" font-family="Georgia, serif" text-anchor="middle">uB</text>
+
+    <line x1="276" y1="430" x2="319" y2="430" stroke="#64748b" stroke-width="4" marker-end="url(#arrow)"/>
+    <line x1="354" y1="430" x2="311" y2="430" stroke="#64748b" stroke-width="4" marker-end="url(#arrow)"/>
+    <rect x="284" y="392" width="62" height="76" rx="18" fill="#2563eb"/>
+    <text x="315" y="422" fill="#dbeafe" font-size="18" font-weight="700" text-anchor="middle">LOGIT</text>
+    <text x="315" y="451" fill="#ffffff" font-size="24" font-weight="700" text-anchor="middle">Δu</text>
+
+    <rect x="520" y="388" width="168" height="84" rx="22" fill="#f1f5f9"/>
+    <text x="604" y="420" fill="#64748b" font-size="19" font-weight="700" text-anchor="middle">NORMALIZE</text>
+    <text x="604" y="452" fill="#0f172a" font-size="27" font-weight="700" text-anchor="middle">pA + pB = 1</text>
+    <path d="M 476 430 H 508" stroke="#64748b" stroke-width="4" marker-end="url(#arrow)"/>
+
+    <rect x="112" y="629" width="590" height="84" rx="18" fill="#eff6ff"/>
+    <text x="407" y="664" fill="#1e3a8a" font-size="27" font-family="Georgia, serif" text-anchor="middle">p(A ≻ B) = exp(uA) / [exp(uA) + exp(uB)]</text>
+    <text x="407" y="698" fill="#2563eb" font-size="21" font-weight="700" text-anchor="middle">PPRM exposes this probability directly</text>
+
+    <g filter="url(#shadow)">
+      <rect x="858" y="205" width="670" height="570" rx="28" fill="#ffffff" stroke="#ddd6fe" stroke-width="2"/>
+    </g>
+    <text x="898" y="264" fill="#7c3aed" font-size="22" font-weight="700" letter-spacing="2">MULTIWAY · LUCE / PLACKETT–LUCE</text>
+    <text x="898" y="310" fill="#0f172a" font-size="34" font-weight="700">K candidates, one distribution</text>
+
+    <g>
+      <circle cx="946" cy="414" r="48" fill="#ede9fe" stroke="#a78bfa" stroke-width="3"/>
+      <circle cx="1062" cy="414" r="48" fill="#f3e8ff" stroke="#c084fc" stroke-width="3"/>
+      <circle cx="1178" cy="414" r="48" fill="#fae8ff" stroke="#e879f9" stroke-width="3"/>
+      <circle cx="1294" cy="414" r="48" fill="#fdf2f8" stroke="#f9a8d4" stroke-width="3"/>
+      <text x="946" y="426" fill="#5b21b6" font-size="30" font-weight="700" text-anchor="middle">a₁</text>
+      <text x="1062" y="426" fill="#6b21a8" font-size="30" font-weight="700" text-anchor="middle">a₂</text>
+      <text x="1178" y="426" fill="#86198f" font-size="30" font-weight="700" text-anchor="middle">a₃</text>
+      <text x="1294" y="426" fill="#9d174d" font-size="30" font-weight="700" text-anchor="middle">aₖ</text>
+      <text x="946" y="493" fill="#7c3aed" font-size="24" font-family="Georgia, serif" text-anchor="middle">u₁</text>
+      <text x="1062" y="493" fill="#7c3aed" font-size="24" font-family="Georgia, serif" text-anchor="middle">u₂</text>
+      <text x="1178" y="493" fill="#7c3aed" font-size="24" font-family="Georgia, serif" text-anchor="middle">u₃</text>
+      <text x="1294" y="493" fill="#7c3aed" font-size="24" font-family="Georgia, serif" text-anchor="middle">uₖ</text>
+    </g>
+
+    <line x1="1348" y1="414" x2="1390" y2="414" stroke="#64748b" stroke-width="4" marker-end="url(#arrow)"/>
+    <rect x="1402" y="371" width="86" height="86" rx="22" fill="#7c3aed"/>
+    <text x="1445" y="406" fill="#ede9fe" font-size="18" font-weight="700" text-anchor="middle">SOFT</text>
+    <text x="1445" y="437" fill="#ffffff" font-size="23" font-weight="700" text-anchor="middle">MAX</text>
+
+    <rect x="902" y="548" width="582" height="74" rx="22" fill="#f5f3ff"/>
+    <rect x="902" y="548" width="218" height="74" rx="22" fill="#7c3aed"/>
+    <rect x="1120" y="548" width="148" height="74" fill="#a78bfa"/>
+    <rect x="1268" y="548" width="122" height="74" fill="#c4b5fd"/>
+    <rect x="1390" y="548" width="94" height="74" rx="22" fill="#ddd6fe"/>
+    <text x="1011" y="594" fill="#ffffff" font-size="25" font-weight="700" text-anchor="middle">p₁</text>
+    <text x="1194" y="594" fill="#ffffff" font-size="25" font-weight="700" text-anchor="middle">p₂</text>
+    <text x="1329" y="594" fill="#5b21b6" font-size="25" font-weight="700" text-anchor="middle">p₃</text>
+    <text x="1437" y="594" fill="#5b21b6" font-size="25" font-weight="700" text-anchor="middle">pₖ</text>
+
+    <text x="1193" y="674" fill="#0f172a" font-size="27" font-family="Georgia, serif" text-anchor="middle">pᵢ = exp(uᵢ) / Σⱼ exp(uⱼ)</text>
+    <text x="1193" y="713" fill="#7c3aed" font-size="21" font-weight="700" text-anchor="middle">Top-one choice: Luce · Full order: Plackett–Luce</text>
+
+    <rect x="180" y="817" width="1240" height="70" rx="35" fill="url(#bridge)"/>
+    <text x="800" y="861" fill="#ffffff" font-size="28" font-weight="700" text-anchor="middle">Same utilities · Same normalization · K changes</text>
+    <text x="790" y="474" fill="#94a3b8" font-size="40" font-weight="700" text-anchor="middle">→</text>
+  </g>
+</svg>

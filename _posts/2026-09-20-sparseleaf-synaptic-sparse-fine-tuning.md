@@ -35,9 +35,15 @@ We call this **synaptic sparse fine-tuning**. Its central principle is simple:
 
 > Constrain how many connections can change. Preserve the freedom for those changes to form a high-rank update.
 
-## 1. Why LoRA Is Wrong: Parameter Efficiency Is Not Low Rank
+<span id="1-why-lora-is-wrong-parameter-efficiency-is-not-low-rank"></span>
 
-### Two different constraints
+## 1. Why LoRA Is Wrong: The Cost of Factorization
+
+LoRA's theoretical cost appears in three places: the updates it can represent, the directions it can learn at initialization, and the geometry of its optimizer. We examine these together: first the rank constraint and its task-loss consequence, then the initialization and optimization mechanisms, and finally the direct-coordinate alternative.
+
+### 1.1 Expressivity: low rank is not sparsity
+
+#### Two different constraints
 
 Write the adapted weight matrix as
 
@@ -67,7 +73,7 @@ A dense outer product <span class="math-inline" markdown="0">\(uv^\top\)</span> 
 
 *Figure 1. Two different structures. The outer product changes all 64 entries and has rank one. The diagonal update changes eight entries and has rank eight. These are analytic examples of update matrices.*
 
-### The expressive price of factorization
+#### The expressive price of factorization
 
 LoRA represents the update to an <span class="math-inline" markdown="0">\(m\times n\)</span> weight matrix through two trainable factors:
 
@@ -130,7 +136,7 @@ For <span class="math-inline" markdown="0">\(\Delta W^*=aI_d\)</span>, all <span
 \]
 </div>
 
-### Low intrinsic dimension is not low matrix rank
+#### Low intrinsic dimension is not low matrix rank
 
 The literature on intrinsic dimension asks how many trainable variables are needed to adapt a pretrained model. Aghajanyan, Gupta, and Zettlemoyer report that 200 variables, mapped into the full parameter space through a random projection, achieve 90% of full-parameter fine-tuning performance on MRPC with RoBERTa. Their experiments also show that pretraining reduces the measured intrinsic dimension of adaptation. [Intrinsic Dimensionality Explains the Effectiveness of Language Model Fine-Tuning](https://aclanthology.org/2021.acl-long.568/)
 
@@ -138,7 +144,113 @@ This is a statement about the dimension of the learning parameterization. Matrix
 
 Independent connection adjustments do not become redundant merely because we want a small training state. SparseLeaf keeps those adjustments independent and places the budget on their count.
 
-### Zero output can hide an inactive learning path
+<span id="3-when-high-rank-sparse-learning-beats-low-rank-dense-learning"></span>
+
+### 1.2 A rank constraint becomes a task-loss floor
+
+We can turn the expressive difference into an exact learning result.
+
+Consider a <span class="math-inline" markdown="0">\(d\times d\)</span> linear layer. Draw inputs with second moment
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E[xx^\top]=I_d,
+\]
+</div>
+
+and define the target by
+
+<div class="math-display" markdown="0">
+\[
+y=(W_0+aI_d)x,
+\qquad a\ne0.
+\]
+</div>
+
+Every input coordinate requires its own adjustment. With squared loss,
+
+<div class="math-display" markdown="0">
+\[
+\begin{aligned}
+\mathcal L(W)
+&amp;=\frac12\mathbb E\&#124;Wx-y\&#124;_2^2\\
+&amp;=\frac12\&#124;W-W_0-aI_d\&#124;_F^2.
+\end{aligned}
+\]
+</div>
+
+#### SparseLeaf follows the full-gradient trajectory
+
+Select the <span class="math-inline" markdown="0">\(d\)</span> diagonal coordinates and initialize all increments at zero. Use the exact gradient of this population loss, ordinary gradient descent, and a constant step size <span class="math-inline" markdown="0">\(0&lt;\eta&lt;2\)</span>.
+
+Each selected increment follows
+
+<div class="math-display" markdown="0">
+\[
+\theta_{i,t+1}
+=\theta_{i,t}-\eta(\theta_{i,t}-a).
+\]
+</div>
+
+Therefore,
+
+<div class="math-display" markdown="0">
+\[
+\theta_{i,t}=a\bigl[1-(1-\eta)^t\bigr],
+\]
+</div>
+
+and
+
+<div class="math-display" markdown="0">
+\[
+\boxed{
+\mathcal L_t^{\mathrm{SparseLeaf}}
+=\mathcal L_t^{\mathrm{Full}}
+=\frac{da^2}{2}(1-\eta)^{2t}
+\longrightarrow0.
+}
+\]
+</div>
+
+The full gradient is diagonal throughout this trajectory. SparseLeaf learns every coordinate that the full update changes, producing the same weights at every step.
+
+#### Low rank leaves a positive minimum loss
+
+A LoRA update satisfies <span class="math-inline" markdown="0">\(\operatorname{rank}(BA)\le r\)</span>. For <span class="math-inline" markdown="0">\(r&lt;d\)</span>, the best achievable loss is
+
+<div class="math-display" markdown="0">
+\[
+\boxed{
+\min_{A,B}\mathcal L(W_0+BA)
+=\frac{d-r}{2}a^2.
+}
+\]
+</div>
+
+This is the global minimum over the factors. Optimization within the rank-<span class="math-inline" markdown="0">\(r\)</span> family cannot remove the error associated with the remaining <span class="math-inline" markdown="0">\(d-r\)</span> directions.
+
+<img src="/images/blog/sparseleaf-synaptic-sparse-fine-tuning/03-task-loss-separation.png" alt="Exact SparseLeaf and full-gradient loss trajectories, together with the global minimum loss imposed by a rank-eight update in a 64-dimensional diagonal regression task." width="2560" height="1280" loading="lazy" decoding="async">
+
+*Figure 2. Analytic regression example with <span class="math-inline" markdown="0">\(d=64\)</span>, <span class="math-inline" markdown="0">\(r=8\)</span>, <span class="math-inline" markdown="0">\(a=1\)</span>, and <span class="math-inline" markdown="0">\(\eta=0.1\)</span>. SparseLeaf and full-gradient descent have the same trajectory. The orange line is the best loss achievable by any rank-eight update.*
+
+The comparison is unusually direct. SparseLeaf learns <span class="math-inline" markdown="0">\(d\)</span> values and reaches zero loss. Standard LoRA learns <span class="math-inline" markdown="0">\(2dr\)</span> factor values and retains a positive loss floor.
+
+The target is simple in coordinates and rich in independent directions. A sparse parameterization captures both facts at once.
+
+**High-rank sparse learning wins here because it allocates variables to the changes the task actually requires.**
+
+#### The empirical counterpart
+
+Sparse high-rank adaptation also wins direct comparisons in language models. In Bhardwaj and colleagues' SHiRA experiments, LLaMA-7B reaches 77.4% average accuracy across eight commonsense-reasoning benchmarks with SHiRA-SNIP, compared with 74.7% for LoRA. SHiRA trains 1.0% of the original parameters; LoRA uses 0.83% in trainable factors. The magnitude-selected SHiRA variant reaches 77.0%. [Sparse High Rank Adapters, Table 2](https://arxiv.org/html/2406.13175)
+
+Liu and colleagues report a matched-parameter comparison on Gemma2-2B, trained on MetaMathQA and evaluated on five-shot GSM8K. Their static, gradient-selected sparse adaptation scores 50.27% versus LoRA's 39.20% with flexible answer extraction, and 37.15% versus 28.81% with strict matching. The trainable budget is held equal while its parameterization changes. [Refining Salience-Aware Sparse Fine-Tuning Strategies for Language Models, Table 3](https://aclanthology.org/2025.acl-long.1541/)
+
+The analytic task explains an expressive advantage of sparse, independent corrections. These published comparisons show that coordinate-sparse adaptation can turn its learning budget into better task performance than low-rank factorization.
+
+### 1.3 Initialization: which directions can learn first?
+
+#### Zero output can hide an inactive learning path
 
 Factorization imposes a second cost before learning has made its first update. The standard initialization sets <span class="math-inline" markdown="0">\(B_0=0\)</span> and draws <span class="math-inline" markdown="0">\(A_0\)</span> randomly, making <span class="math-inline" markdown="0">\(B_0A_0=0\)</span>. This is the zero-product initialization specified in the original LoRA paper. [Hu et al., §4.1](https://arxiv.org/abs/2106.09685) It preserves the pretrained model's initial function. It does not preserve its learning geometry.
 
@@ -177,7 +289,7 @@ The differential makes the inactive path explicit:
 
 For a full-row-rank <span class="math-inline" markdown="0">\(A_0\)</span>, the initial parameter-to-weight Jacobian has rank <span class="math-inline" markdown="0">\(mr\)</span>. LoRA stores <span class="math-inline" markdown="0">\(r(m+n)\)</span> factor values, but all <span class="math-inline" markdown="0">\(rn\)</span> coordinates of <span class="math-inline" markdown="0">\(A\)</span> are invisible to this initial differential. The parameter count overstates the number of independent directions available at the starting point.
 
-### The random basis decides what can move first
+#### The random basis decides what can move first
 
 The initial tangent space—the weight changes available to first order—is
 
@@ -194,7 +306,215 @@ This is an initialization bottleneck as well as a rank bottleneck: the first cor
 
 Even exchanging the zero and random factors changes the dynamics. Hayou, Ghosh, and Yu derive different stable learning-rate scalings and observe different fine-tuning performance for these two initializations, despite identical initial model outputs. **Starting from the same function does not mean starting with the same ability to learn.** [The Impact of Initialization on LoRA Finetuning Dynamics](https://proceedings.neurips.cc/paper_files/paper/2024/hash/d4387c37b3b06e55f86eccdb8cd1f829-Abstract-Conference.html)
 
-### Zero the increment, not its derivative
+#### Initialization determines the first learning geometry
+
+The initial basis also determines the geometry of the first update. Take unit adapter scaling, no adapter dropout, and ordinary gradient descent. At the base model, let <span class="math-inline" markdown="0">\(G=\nabla_W\mathcal L(W_0)\)</span>, draw <span class="math-inline" markdown="0">\(A_0\)</span> randomly, and set <span class="math-inline" markdown="0">\(B_0=0\)</span>. Since the first task gradient of <span class="math-inline" markdown="0">\(A\)</span> is zero, <span class="math-inline" markdown="0">\(A_1=A_0\)</span>, while <span class="math-inline" markdown="0">\(B_1=-\eta GA_0^\top\)</span>. The first effective weight update is exactly
+
+<div class="math-display" markdown="0">
+\[
+\Delta W_1=-\eta GA_0^\top A_0.
+\]
+</div>
+
+The gradient passes through the random Gram matrix <span class="math-inline" markdown="0">\(A_0^\top A_0\)</span>. Its scale and directional weighting come from the initialization. Replacing <span class="math-inline" markdown="0">\(A_0\)</span> with <span class="math-inline" markdown="0">\(cA_0\)</span> leaves the initial model unchanged but multiplies this SGD update by <span class="math-inline" markdown="0">\(c^2\)</span> at the same learning rate. Initialization therefore changes the effective optimizer while keeping the starting predictions identical.
+
+Flora develops this connection into a random-projection interpretation of LoRA's SGD dynamics. It then refreshes the projections to obtain high-rank accumulated updates while keeping optimizer states compact. The distinction is fundamental: compressing the state used to learn and restricting the rank of the accumulated change are different design decisions. [Flora, §§2–3](https://proceedings.mlr.press/v235/hao24a.html)
+
+To isolate random geometry from mean scale, use independent <span class="math-inline" markdown="0">\(A_{0,ij}\sim\mathcal N(0,1/r)\)</span> and fixed <span class="math-inline" markdown="0">\(G\)</span>. This normalization gives <span class="math-inline" markdown="0">\(\mathbb E[A_0^\top A_0]=I_n\)</span>, so the mean first update is <span class="math-inline" markdown="0">\(-\eta G\)</span>. Its mean squared deviation from that update is
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E\&#124;\Delta W_1+\eta G\&#124;_F^2
+=\eta^2\frac{n+1}{r}\&#124;G\&#124;_F^2.
+\]
+</div>
+
+For <span class="math-inline" markdown="0">\(n=4096\)</span> and <span class="math-inline" markdown="0">\(r=8\)</span>, the relative mean squared deviation is <span class="math-inline" markdown="0">\(4097/8=512.125\)</span>. Matching the full-gradient step *in expectation* says little about the step produced by one initialized adapter. The expandable derivation below gives the exact calculation.
+
+#### Better scaling cannot restore missing directions
+
+Remove the random singular-value scaling and examine the initial subspace itself. For full-row-rank <span class="math-inline" markdown="0">\(A_0\)</span>, its orthogonal projector is
+
+<div class="math-display" markdown="0">
+\[
+\Pi_0=A_0^\top(A_0A_0^\top)^{-1}A_0.
+\]
+</div>
+
+The closest approximation to <span class="math-inline" markdown="0">\(G\)</span> inside <span class="math-inline" markdown="0">\(\mathcal T_0\)</span> is <span class="math-inline" markdown="0">\(G\Pi_0\)</span>. An isotropic Gaussian initialization chooses a uniformly oriented <span class="math-inline" markdown="0">\(r\)</span>-dimensional row space, giving
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E\&#124;G\Pi_0\&#124;_F^2=\frac rn\&#124;G\&#124;_F^2,
+\qquad
+\mathbb E\&#124;G-G\Pi_0\&#124;_F^2
+=\left(1-\frac rn\right)\&#124;G\&#124;_F^2.
+\]
+</div>
+
+At width 4096 and rank 8, the initial tangent space captures 0.1953% of a fixed task gradient's squared energy on average. This is the best projection into that initial space, with its conditioning already removed. Rescaling a step cannot recover the missing directions; they require learning a different basis.
+
+<details id="appendix-a-the-first-step-geometry-of-gaussian-lora-initialization" markdown="1">
+<summary>Derivation: Gaussian first-step error and projected gradient energy</summary>
+
+Take a deterministic forward pass without adapter dropout, unit adapter scaling, ordinary gradient descent, <span class="math-inline" markdown="0">\(B_0=0\)</span>, and independent entries <span class="math-inline" markdown="0">\(A_{0,ij}\sim\mathcal N(0,1/r)\)</span>. The base-model gradient <span class="math-inline" markdown="0">\(G\)</span> is fixed and independent of <span class="math-inline" markdown="0">\(A_0\)</span>.
+
+Write
+
+<div class="math-display" markdown="0">
+\[
+Q=A_0^\top A_0
+=\frac1r\sum_{\ell=1}^{r}z_\ell z_\ell^\top,
+\qquad
+z_\ell\sim\mathcal N(0,I_n).
+\]
+</div>
+
+Then <span class="math-inline" markdown="0">\(\mathbb E Q=I_n\)</span>. For one Gaussian vector,
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E(zz^\top)^2=(n+2)I_n,
+\]
+</div>
+
+because each diagonal entry has expectation
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E\left[z_i^2\sum_j z_j^2\right]
+=3+(n-1)=n+2,
+\]
+</div>
+
+and off-diagonal expectations vanish. Independence gives
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E Q^2
+=\frac{r(n+2)+r(r-1)}{r^2}I_n
+=\left(1+\frac{n+1}{r}\right)I_n.
+\]
+</div>
+
+Consequently,
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E(Q-I_n)^2=\frac{n+1}{r}I_n.
+\]
+</div>
+
+The effective first update is <span class="math-inline" markdown="0">\(\Delta W_1=-\eta GQ\)</span>, so
+
+<div class="math-display" markdown="0">
+\[
+\begin{aligned}
+\mathbb E\&#124;\Delta W_1+\eta G\&#124;_F^2
+&amp;=\eta^2\operatorname{tr}
+\left(G\,\mathbb E[(Q-I_n)^2]G^\top\right)\\
+&amp;=\eta^2\frac{n+1}{r}\&#124;G\&#124;_F^2.
+\end{aligned}
+\]
+</div>
+
+Averaging <span class="math-inline" markdown="0">\(M\)</span> independent initialized updates divides this mean squared deviation by <span class="math-inline" markdown="0">\(M\)</span>. The factorization thus has both an exact mean update and a computable distribution around it.
+
+#### The initial-subspace projection
+
+For <span class="math-inline" markdown="0">\(1\le r\le n\)</span>, a Gaussian <span class="math-inline" markdown="0">\(A_0\)</span> has full row rank almost surely. Its row-space projector <span class="math-inline" markdown="0">\(\Pi_0\)</span> satisfies <span class="math-inline" markdown="0">\(\Pi_0^\top=\Pi_0\)</span>, <span class="math-inline" markdown="0">\(\Pi_0^2=\Pi_0\)</span>, and <span class="math-inline" markdown="0">\(\operatorname{tr}\Pi_0=r\)</span>. Rotational invariance implies <span class="math-inline" markdown="0">\(\mathbb E\Pi_0=cI_n\)</span>; taking traces gives <span class="math-inline" markdown="0">\(c=r/n\)</span>.
+
+Orthogonal projection onto <span class="math-inline" markdown="0">\(\mathcal T_0=\{HA_0\}\)</span> acts on each row of <span class="math-inline" markdown="0">\(G\)</span>, so
+
+<div class="math-display" markdown="0">
+\[
+\arg\min_{M\in\mathcal T_0}\&#124;G-M\&#124;_F^2=G\Pi_0.
+\]
+</div>
+
+Idempotence then yields
+
+<div class="math-display" markdown="0">
+\[
+\begin{aligned}
+\mathbb E\&#124;G\Pi_0\&#124;_F^2
+&amp;=\operatorname{tr}(G\,\mathbb E\Pi_0\,G^\top)
+=\frac rn\&#124;G\&#124;_F^2,\\
+\mathbb E\&#124;G-G\Pi_0\&#124;_F^2
+&amp;=\left(1-\frac rn\right)\&#124;G\&#124;_F^2.
+\end{aligned}
+\]
+</div>
+
+This isolates the missing-direction cost from the random scaling of the unnormalized Gram matrix.
+
+</details>
+
+### 1.4 Optimization: factors change the meaning of a step
+
+#### Rank and update scale are entangled
+
+The adapter's external multiplier introduces another scale coupling. Write the adapter as <span class="math-inline" markdown="0">\(\gamma_r BA\)</span>, keep <span class="math-inline" markdown="0">\(B_0=0\)</span>, and now use independent, zero-mean entries of <span class="math-inline" markdown="0">\(A_0\)</span> with variance <span class="math-inline" markdown="0">\(\sigma_A^2\)</span> independent of <span class="math-inline" markdown="0">\(r\)</span>. The same first-step SGD calculation gives
+
+<div class="math-display" markdown="0">
+\[
+\mathbb E[\Delta W_1]
+=-\eta\gamma_r^2 r\sigma_A^2G.
+\]
+</div>
+
+With fixed <span class="math-inline" markdown="0">\(\alpha\)</span>, the usual <span class="math-inline" markdown="0">\(\gamma_r=\alpha/r\)</span> makes this mean step shrink as <span class="math-inline" markdown="0">\(1/r\)</span>; <span class="math-inline" markdown="0">\(\gamma_r=\alpha/\sqrt r\)</span> keeps its scale constant. The rsLoRA paper derives the square-root rule through a rank-stability analysis and demonstrates improved use of larger ranks. Rank is entangled with optimization scale before its additional capacity can be used. [A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA, §3 and Appendix A](https://arxiv.org/html/2312.03732)
+
+#### Learning the basis couples the two factor learning rates
+
+The two factors also control that basis learning through one another. With SGD learning rates <span class="math-inline" markdown="0">\(\eta_A,\eta_B\)</span> and <span class="math-inline" markdown="0">\(G_t=\nabla_W\mathcal L(W_t)\)</span>, the second update gives
+
+<div class="math-display" markdown="0">
+\[
+A_2-A_1=\eta_A\eta_B A_0G_0^\top G_1.
+\]
+</div>
+
+Its onset is coupled to both learning rates. LoRA+ analyzes this imbalance in the large-width limit and uses different factor learning rates to improve feature learning. The factors require a relative learning-rate choice in addition to the choice of starting basis. [LoRA+: Efficient Low Rank Adaptation of Large Models](https://proceedings.mlr.press/v235/hayou24a.html)
+
+#### Adam normalizes factor gradients inside the same initial subspace
+
+The first-step geometry remains explicit with Adam. Start both factors' optimizer moments at zero and define <span class="math-inline" markdown="0">\(\Gamma_0=GA_0^\top\)</span>. Bias correction gives <span class="math-inline" markdown="0">\(\widehat m_{B,1}=\Gamma_0\)</span> and <span class="math-inline" markdown="0">\(\widehat v_{B,1}=\Gamma_0^{\odot2}\)</span>. The resulting unit-scaled adapter is
+
+<div class="math-display" markdown="0">
+\[
+\Delta W_1^{\mathrm{LoRA\text{-}Adam}}
+=-\eta_B
+\left(\frac{\Gamma_0}{&#124;\Gamma_0&#124;+\epsilon}\right)A_0.
+\]
+</div>
+
+Adam changes the coefficients multiplying <span class="math-inline" markdown="0">\(A_0\)</span>. Every row of this first update still belongs to its initial row space, and <span class="math-inline" markdown="0">\(A\)</span> still receives zero task gradient at the starting point. Factorwise normalization does not create directions absent from that space.
+
+There is a second problem with factorwise normalization. The same product has equivalent representations <span class="math-inline" markdown="0">\(BA=(BR)(R^{-1}A)\)</span> for any invertible <span class="math-inline" markdown="0">\(R\)</span>. Yen and colleagues show that gradient descent and Adam generally produce different effective weight updates from equivalent factorizations. Their LoRA-RITE optimizer introduces matrix preconditioning to restore transformation invariance. **Normalizing factor gradients is not the same as normalizing changes to the model.** [LoRA Done RITE, §§2–3](https://arxiv.org/html/2410.20625)
+
+### 1.5 What initialization and optimizer research is repairing
+
+LoRA-Pro states the optimization problem directly in weight space. It adjusts factor gradients to minimize the difference between their induced weight differential and the full-fine-tuning gradient. The factorized parameterization introduces a gradient-approximation problem inside the learning procedure itself. [LoRA-Pro, §§2.2–2.3](https://arxiv.org/html/2407.18242)
+
+LoRA-GA explicitly targets the mismatch between LoRA's initial weight-update direction and the full-fine-tuning gradient. It initializes the factors from singular vectors of a sampled task gradient and offsets the frozen weight to preserve the initial model. [LoRA-GA, §§3.2–3.4](https://arxiv.org/html/2407.05000)
+
+PiSSA instead initializes the factors from principal components of the pretrained weight and freezes its residual. The initial function is preserved, but the basis now comes from the pretrained matrix rather than a random draw. [PiSSA, §3](https://arxiv.org/html/2404.02948)
+
+EVA uses a third source of directions: the pretrained model's input activations on task data. It initializes <span class="math-inline" markdown="0">\(A\)</span> from their leading right singular vectors and keeps <span class="math-inline" markdown="0">\(B_0=0\)</span>. Its <span class="math-inline" markdown="0">\(\rho=1\)</span> configuration retains uniform ranks, giving a direct comparison of activation-based and random initialization at the same parameter count. [Explained Variance Adaptation, §§3.2–3.5](https://arxiv.org/html/2410.07170)
+
+Published experiments make the consequences concrete. Each row below is a comparison within the cited study; the reported results are task accuracies.
+
+| Factorization choice tested | Model and training setup | Reported result |
+|---|---|---|
+| Which factor starts at zero | RoBERTa-large on MNLI; <span class="math-inline" markdown="0">\(r=8\)</span>, FP16, three seeds; learning rate searched for each initialization | <span class="math-inline" markdown="0">\(A_0=0\)</span>: 89.47%; <span class="math-inline" markdown="0">\(B_0=0\)</span>: 90.69%. [Hayou et al., §4.1 and Figure 4](https://proceedings.neurips.cc/paper_files/paper/2024/hash/d4387c37b3b06e55f86eccdb8cd1f829-Abstract-Conference.html) |
+| Gradient-aligned initialization and stable scaling | Llama-2-7B, MetaMathQA training, GSM8K evaluation; <span class="math-inline" markdown="0">\(r=8\)</span>, three seeds | LoRA: 42.08% → LoRA-GA: 53.60%. [LoRA-GA, Table 2](https://arxiv.org/html/2407.05000) |
+| Activation-based initialization at fixed rank and parameter count | Llama-2-7B, MetaMathQA training, GSM8K evaluation; <span class="math-inline" markdown="0">\(r=16\)</span>, 40.6M trainable parameters each, three seeds | LoRA: 59.7% → EVA (<span class="math-inline" markdown="0">\(\rho=1\)</span>): 61.9%. [EVA, Table 11](https://arxiv.org/html/2410.07170) |
+| Transformation-invariant factor optimization | Gemma-7B on GSM8K; <span class="math-inline" markdown="0">\(r=16\)</span>; learning rate searched for each optimizer | Adam: 48.37% → LoRA-RITE: 55.50%. [LoRA-RITE, §5 and Table 2](https://arxiv.org/html/2410.20625) |
+
+The difference is visible in learned weights as well. Shuttleworth and colleagues find that LoRA and full fine-tuning produce distinct spectral structures even at similar downstream performance. LoRA introduces prominent singular vectors that differ sharply from those of the pretrained model, which the authors call *intruder dimensions*. A parameterization shapes both the path of learning and the structure of its solution. [LoRA vs Full Fine-tuning: An Illusion of Equivalence, §3](https://arxiv.org/html/2410.21228v3)
+
+### 1.6 The alternative: independent connection increments
 
 SparseLeaf gives each selected connection its own increment:
 
@@ -220,6 +540,26 @@ Its derivative is already present at zero:
 All selected connection directions are available from the first backward pass. Zero increments preserve the pretrained function without silencing a parameter block or introducing a random learned basis between the task gradient and its trainable variables.
 
 The support determines where learning is allowed. The native gradient determines how each permitted connection should change. SparseLeaf starts with both parts of that interface intact.
+
+For a flattened gradient <span class="math-inline" markdown="0">\(g\)</span>, let <span class="math-inline" markdown="0">\(P_S\)</span> extract the selected coordinates. An ordinary coordinate-gradient step is <span class="math-inline" markdown="0">\(-\eta P_S^\top P_Sg\)</span>. The extraction preserves each selected component instead of mixing it through a learned factor.
+
+<img src="/images/blog/sparseleaf-synaptic-sparse-fine-tuning/04-native-coordinate-learning.png" alt="Two first-step learning paths: LoRA transforms the weight gradient through its initialized factors, while SparseLeaf extracts the selected native coordinates." width="2560" height="1280" loading="lazy" decoding="async">
+
+*Figure 3. Both parameterizations start at the base model. With unit adapter scaling and ordinary gradient descent, LoRA's first effective update is <span class="math-inline" markdown="0">\(-\eta GA_0^\top A_0\)</span>; SparseLeaf's is <span class="math-inline" markdown="0">\(-\eta P_S^\top P_Sg\)</span> in flattened coordinates.*
+
+With Adam, let <span class="math-inline" markdown="0">\(g_S=P_Sg\)</span> at the same pretrained model. Its first Adam update is
+
+<div class="math-display" markdown="0">
+\[
+\theta_1=-\eta\frac{g_S}{&#124;g_S&#124;+\epsilon},
+\qquad
+\delta w_1=P_S^\top\theta_1.
+\]
+</div>
+
+Every selected connection is normalized using its own task gradient. The embedding has <span class="math-inline" markdown="0">\(K\)</span> orthonormal coordinate directions even at <span class="math-inline" markdown="0">\(\theta=0\)</span>. There is no factor whose zero value blocks another factor's learning, and no random Gram matrix to insert between the selected gradient and its update. For a fixed support and coordinate ordering, each sparse increment has one parameter vector; there is no equivalent-factor scaling or rotation for the optimizer to reconcile.
+
+Together with LoRA+, these studies identify the optimization work introduced by factorization: choose a basis, calibrate its scale, balance its factors, and correct the geometry of their updates. SparseLeaf places the design decision directly on the support. Once the connections are selected, zero increments and zero Adam moments are enough to start learning in their native coordinates. **Preserve the pretrained computation, and spend the learning budget on independently changing its connections.**
 
 ## 2. SparseLeaf: Give Existing Connections Plasticity
 
@@ -259,7 +599,7 @@ The trainable vector is <span class="math-inline" markdown="0">\(\theta\in\mathb
 
 <img src="/images/blog/sparseleaf-synaptic-sparse-fine-tuning/02-synaptic-plasticity.png" alt="Three selected neural connections mapped to three weight coordinates and three independent trainable increments." width="2560" height="1280" loading="lazy" decoding="async">
 
-*Figure 2. One set of connections, three views. Gray connections retain their pretrained weights and participate in computation. Colored connections use their pretrained weights plus independent increments. The same colors identify the connections, matrix entries, and trainable values.*
+*Figure 4. One set of connections, three views. Gray connections retain their pretrained weights and participate in computation. Colored connections use their pretrained weights plus independent increments. The same colors identify the connections, matrix entries, and trainable values.*
 
 This separates two roles that are often bundled together. The dense network provides the representational machinery built during pretraining. The selected connections provide the degrees of freedom used to adapt that machinery.
 
@@ -310,109 +650,9 @@ SpaRTA takes an even simpler route: randomly select a small set of original para
 
 These methods establish the usefulness of sparse changes. SparseLeaf organizes that idea around independent plastic connections, a fixed support, and an optimizer whose entire trainable state lives on that support.
 
-## 3. When High-Rank Sparse Learning Beats Low-Rank Dense Learning
+<span id="4-sparseleaf-adam-optimize-the-connections-directly"></span>
 
-We can turn the expressive difference into an exact learning result.
-
-Consider a <span class="math-inline" markdown="0">\(d\times d\)</span> linear layer. Draw inputs with second moment
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E[xx^\top]=I_d,
-\]
-</div>
-
-and define the target by
-
-<div class="math-display" markdown="0">
-\[
-y=(W_0+aI_d)x,
-\qquad a\ne0.
-\]
-</div>
-
-Every input coordinate requires its own adjustment. With squared loss,
-
-<div class="math-display" markdown="0">
-\[
-\begin{aligned}
-\mathcal L(W)
-&amp;=\frac12\mathbb E\&#124;Wx-y\&#124;_2^2\\
-&amp;=\frac12\&#124;W-W_0-aI_d\&#124;_F^2.
-\end{aligned}
-\]
-</div>
-
-### SparseLeaf follows the full-gradient trajectory
-
-Select the <span class="math-inline" markdown="0">\(d\)</span> diagonal coordinates and initialize all increments at zero. Use the exact gradient of this population loss, ordinary gradient descent, and a constant step size <span class="math-inline" markdown="0">\(0&lt;\eta&lt;2\)</span>.
-
-Each selected increment follows
-
-<div class="math-display" markdown="0">
-\[
-\theta_{i,t+1}
-=\theta_{i,t}-\eta(\theta_{i,t}-a).
-\]
-</div>
-
-Therefore,
-
-<div class="math-display" markdown="0">
-\[
-\theta_{i,t}=a\bigl[1-(1-\eta)^t\bigr],
-\]
-</div>
-
-and
-
-<div class="math-display" markdown="0">
-\[
-\boxed{
-\mathcal L_t^{\mathrm{SparseLeaf}}
-=\mathcal L_t^{\mathrm{Full}}
-=\frac{da^2}{2}(1-\eta)^{2t}
-\longrightarrow0.
-}
-\]
-</div>
-
-The full gradient is diagonal throughout this trajectory. SparseLeaf learns every coordinate that the full update changes, producing the same weights at every step.
-
-### Low rank leaves a positive minimum loss
-
-A LoRA update satisfies <span class="math-inline" markdown="0">\(\operatorname{rank}(BA)\le r\)</span>. For <span class="math-inline" markdown="0">\(r&lt;d\)</span>, the best achievable loss is
-
-<div class="math-display" markdown="0">
-\[
-\boxed{
-\min_{A,B}\mathcal L(W_0+BA)
-=\frac{d-r}{2}a^2.
-}
-\]
-</div>
-
-This is the global minimum over the factors. Optimization within the rank-<span class="math-inline" markdown="0">\(r\)</span> family cannot remove the error associated with the remaining <span class="math-inline" markdown="0">\(d-r\)</span> directions.
-
-<img src="/images/blog/sparseleaf-synaptic-sparse-fine-tuning/03-task-loss-separation.png" alt="Exact SparseLeaf and full-gradient loss trajectories, together with the global minimum loss imposed by a rank-eight update in a 64-dimensional diagonal regression task." width="2560" height="1280" loading="lazy" decoding="async">
-
-*Figure 3. Analytic regression example with <span class="math-inline" markdown="0">\(d=64\)</span>, <span class="math-inline" markdown="0">\(r=8\)</span>, <span class="math-inline" markdown="0">\(a=1\)</span>, and <span class="math-inline" markdown="0">\(\eta=0.1\)</span>. SparseLeaf and full-gradient descent have the same trajectory. The orange line is the best loss achievable by any rank-eight update.*
-
-The comparison is unusually direct. SparseLeaf learns <span class="math-inline" markdown="0">\(d\)</span> values and reaches zero loss. Standard LoRA learns <span class="math-inline" markdown="0">\(2dr\)</span> factor values and retains a positive loss floor.
-
-The target is simple in coordinates and rich in independent directions. A sparse parameterization captures both facts at once.
-
-**High-rank sparse learning wins here because it allocates variables to the changes the task actually requires.**
-
-### The empirical counterpart
-
-Sparse high-rank adaptation also wins direct comparisons in language models. In Bhardwaj and colleagues' SHiRA experiments, LLaMA-7B reaches 77.4% average accuracy across eight commonsense-reasoning benchmarks with SHiRA-SNIP, compared with 74.7% for LoRA. SHiRA trains 1.0% of the original parameters; LoRA uses 0.83% in trainable factors. The magnitude-selected SHiRA variant reaches 77.0%. [Sparse High Rank Adapters, Table 2](https://arxiv.org/html/2406.13175)
-
-Liu and colleagues report a matched-parameter comparison on Gemma2-2B, trained on MetaMathQA and evaluated on five-shot GSM8K. Their static, gradient-selected sparse adaptation scores 50.27% versus LoRA's 39.20% with flexible answer extraction, and 37.15% versus 28.81% with strict matching. The trainable budget is held equal while its parameterization changes. [Refining Salience-Aware Sparse Fine-Tuning Strategies for Language Models, Table 3](https://aclanthology.org/2025.acl-long.1541/)
-
-The analytic task explains an expressive advantage of sparse, independent corrections. These published comparisons show that coordinate-sparse adaptation can turn its learning budget into better task performance than low-rank factorization.
-
-## 4. SparseLeaf Adam: Optimize the Connections Directly
+## 3. SparseLeaf Adam: Optimize the Connections Directly
 
 Expressive capacity determines which changes are available. Parameterization also determines how learning signals reach those changes.
 
@@ -539,130 +779,6 @@ For a clean comparison, consider one ordinary gradient-descent step at the same 
 
 Every selected coordinate receives its original gradient. The discrepancy is the gradient energy outside the selected support. When the full-gradient trajectory stays within <span class="math-inline" markdown="0">\(S\)</span>, identical initialization and training steps give identical trajectories by induction. The diagonal task above makes this identity explicit.
 
-### Initialization determines the first learning geometry
-
-We can now quantify the initialization bottleneck from Section 1. Take unit adapter scaling, no adapter dropout, and ordinary gradient descent. At the base model, let <span class="math-inline" markdown="0">\(G=\nabla_W\mathcal L(W_0)\)</span>, draw <span class="math-inline" markdown="0">\(A_0\)</span> randomly, and set <span class="math-inline" markdown="0">\(B_0=0\)</span>. Since the first task gradient of <span class="math-inline" markdown="0">\(A\)</span> is zero, <span class="math-inline" markdown="0">\(A_1=A_0\)</span>, while <span class="math-inline" markdown="0">\(B_1=-\eta GA_0^\top\)</span>. The first effective weight update is exactly
-
-<div class="math-display" markdown="0">
-\[
-\Delta W_1=-\eta GA_0^\top A_0.
-\]
-</div>
-
-The gradient passes through the random Gram matrix <span class="math-inline" markdown="0">\(A_0^\top A_0\)</span>. Its scale and directional weighting come from the initialization. Replacing <span class="math-inline" markdown="0">\(A_0\)</span> with <span class="math-inline" markdown="0">\(cA_0\)</span> leaves the initial model unchanged but multiplies this SGD update by <span class="math-inline" markdown="0">\(c^2\)</span> at the same learning rate. Initialization therefore changes the effective optimizer while keeping the starting predictions identical.
-
-Flora develops this connection into a random-projection interpretation of LoRA's SGD dynamics. It then refreshes the projections to obtain high-rank accumulated updates while keeping optimizer states compact. The distinction is fundamental: compressing the state used to learn and restricting the rank of the accumulated change are different design decisions. [Flora, §§2–3](https://proceedings.mlr.press/v235/hao24a.html)
-
-<img src="/images/blog/sparseleaf-synaptic-sparse-fine-tuning/04-native-coordinate-learning.png" alt="Two first-step learning paths: LoRA transforms the weight gradient through its initialized factors, while SparseLeaf extracts the selected native coordinates." width="2560" height="1280" loading="lazy" decoding="async">
-
-*Figure 4. Both parameterizations start at the base model. With unit adapter scaling and ordinary gradient descent, LoRA's first effective update is <span class="math-inline" markdown="0">\(-\eta GA_0^\top A_0\)</span>; SparseLeaf's is <span class="math-inline" markdown="0">\(-\eta P_S^\top P_Sg\)</span> in flattened coordinates.*
-
-To isolate random geometry from mean scale, use independent <span class="math-inline" markdown="0">\(A_{0,ij}\sim\mathcal N(0,1/r)\)</span> and fixed <span class="math-inline" markdown="0">\(G\)</span>. This normalization gives <span class="math-inline" markdown="0">\(\mathbb E[A_0^\top A_0]=I_n\)</span>, so the mean first update is <span class="math-inline" markdown="0">\(-\eta G\)</span>. Its mean squared deviation from that update is
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E\&#124;\Delta W_1+\eta G\&#124;_F^2
-=\eta^2\frac{n+1}{r}\&#124;G\&#124;_F^2.
-\]
-</div>
-
-For <span class="math-inline" markdown="0">\(n=4096\)</span> and <span class="math-inline" markdown="0">\(r=8\)</span>, the relative mean squared deviation is <span class="math-inline" markdown="0">\(4097/8=512.125\)</span>. Matching the full-gradient step *in expectation* says little about the step produced by one initialized adapter. Appendix A gives the exact calculation.
-
-The adapter's external multiplier introduces another scale coupling. Write the adapter as <span class="math-inline" markdown="0">\(\gamma_r BA\)</span>, keep <span class="math-inline" markdown="0">\(B_0=0\)</span>, and now use independent, zero-mean entries of <span class="math-inline" markdown="0">\(A_0\)</span> with variance <span class="math-inline" markdown="0">\(\sigma_A^2\)</span> independent of <span class="math-inline" markdown="0">\(r\)</span>. The same first-step SGD calculation gives
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E[\Delta W_1]
-=-\eta\gamma_r^2 r\sigma_A^2G.
-\]
-</div>
-
-With fixed <span class="math-inline" markdown="0">\(\alpha\)</span>, the usual <span class="math-inline" markdown="0">\(\gamma_r=\alpha/r\)</span> makes this mean step shrink as <span class="math-inline" markdown="0">\(1/r\)</span>; <span class="math-inline" markdown="0">\(\gamma_r=\alpha/\sqrt r\)</span> keeps its scale constant. The rsLoRA paper derives the square-root rule through a rank-stability analysis and demonstrates improved use of larger ranks. Rank is entangled with optimization scale before its additional capacity can be used. [A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA, §3 and Appendix A](https://arxiv.org/html/2312.03732)
-
-### Better scaling cannot restore missing directions
-
-Remove the random singular-value scaling and examine the initial subspace itself. For full-row-rank <span class="math-inline" markdown="0">\(A_0\)</span>, its orthogonal projector is
-
-<div class="math-display" markdown="0">
-\[
-\Pi_0=A_0^\top(A_0A_0^\top)^{-1}A_0.
-\]
-</div>
-
-The closest approximation to <span class="math-inline" markdown="0">\(G\)</span> inside <span class="math-inline" markdown="0">\(\mathcal T_0\)</span> is <span class="math-inline" markdown="0">\(G\Pi_0\)</span>. An isotropic Gaussian initialization chooses a uniformly oriented <span class="math-inline" markdown="0">\(r\)</span>-dimensional row space, giving
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E\&#124;G\Pi_0\&#124;_F^2=\frac rn\&#124;G\&#124;_F^2,
-\qquad
-\mathbb E\&#124;G-G\Pi_0\&#124;_F^2
-=\left(1-\frac rn\right)\&#124;G\&#124;_F^2.
-\]
-</div>
-
-At width 4096 and rank 8, the initial tangent space captures 0.1953% of a fixed task gradient's squared energy on average. This is the best projection into that initial space, with its conditioning already removed. Rescaling a step cannot recover the missing directions; they require learning a different basis.
-
-The two factors also control that basis learning through one another. With SGD learning rates <span class="math-inline" markdown="0">\(\eta_A,\eta_B\)</span> and <span class="math-inline" markdown="0">\(G_t=\nabla_W\mathcal L(W_t)\)</span>, the second update gives
-
-<div class="math-display" markdown="0">
-\[
-A_2-A_1=\eta_A\eta_B A_0G_0^\top G_1.
-\]
-</div>
-
-Its onset is coupled to both learning rates. LoRA+ analyzes this imbalance in the large-width limit and uses different factor learning rates to improve feature learning. The factors require a relative learning-rate choice in addition to the choice of starting basis. [LoRA+: Efficient Low Rank Adaptation of Large Models](https://proceedings.mlr.press/v235/hayou24a.html)
-
-### Adam normalizes factor gradients inside the same initial subspace
-
-The first-step geometry remains explicit with Adam. Start both factors' optimizer moments at zero and define <span class="math-inline" markdown="0">\(\Gamma_0=GA_0^\top\)</span>. Bias correction gives <span class="math-inline" markdown="0">\(\widehat m_{B,1}=\Gamma_0\)</span> and <span class="math-inline" markdown="0">\(\widehat v_{B,1}=\Gamma_0^{\odot2}\)</span>. The resulting unit-scaled adapter is
-
-<div class="math-display" markdown="0">
-\[
-\Delta W_1^{\mathrm{LoRA\text{-}Adam}}
-=-\eta_B
-\left(\frac{\Gamma_0}{&#124;\Gamma_0&#124;+\epsilon}\right)A_0.
-\]
-</div>
-
-Adam changes the coefficients multiplying <span class="math-inline" markdown="0">\(A_0\)</span>. Every row of this first update still belongs to its initial row space, and <span class="math-inline" markdown="0">\(A\)</span> still receives zero task gradient at the starting point. Factorwise normalization does not create directions absent from that space.
-
-There is a second problem with factorwise normalization. The same product has equivalent representations <span class="math-inline" markdown="0">\(BA=(BR)(R^{-1}A)\)</span> for any invertible <span class="math-inline" markdown="0">\(R\)</span>. Yen and colleagues show that gradient descent and Adam generally produce different effective weight updates from equivalent factorizations. Their LoRA-RITE optimizer introduces matrix preconditioning to restore transformation invariance. **Normalizing factor gradients is not the same as normalizing changes to the model.** [LoRA Done RITE, §§2–3](https://arxiv.org/html/2410.20625)
-
-For SparseLeaf, let <span class="math-inline" markdown="0">\(g_S=P_Sg\)</span> at the same pretrained model. Its first Adam update is
-
-<div class="math-display" markdown="0">
-\[
-\theta_1=-\eta\frac{g_S}{&#124;g_S&#124;+\epsilon},
-\qquad
-\delta w_1=P_S^\top\theta_1.
-\]
-</div>
-
-Every selected connection is normalized using its own task gradient. The embedding has <span class="math-inline" markdown="0">\(K\)</span> orthonormal coordinate directions even at <span class="math-inline" markdown="0">\(\theta=0\)</span>. There is no factor whose zero value blocks another factor's learning, and no random Gram matrix to insert between the selected gradient and its update. For a fixed support and coordinate ordering, each sparse increment has one parameter vector; there is no equivalent-factor scaling or rotation for the optimizer to reconcile.
-
-### Initialization research identifies the cost of the extra basis
-
-LoRA-Pro states the optimization problem directly in weight space. It adjusts factor gradients to minimize the difference between their induced weight differential and the full-fine-tuning gradient. The factorized parameterization introduces a gradient-approximation problem inside the learning procedure itself. [LoRA-Pro, §§2.2–2.3](https://arxiv.org/html/2407.18242)
-
-LoRA-GA explicitly targets the mismatch between LoRA's initial weight-update direction and the full-fine-tuning gradient. It initializes the factors from singular vectors of a sampled task gradient and offsets the frozen weight to preserve the initial model. [LoRA-GA, §§3.2–3.4](https://arxiv.org/html/2407.05000)
-
-PiSSA instead initializes the factors from principal components of the pretrained weight and freezes its residual. The initial function is preserved, but the basis now comes from the pretrained matrix rather than a random draw. [PiSSA, §3](https://arxiv.org/html/2404.02948)
-
-EVA uses a third source of directions: the pretrained model's input activations on task data. It initializes <span class="math-inline" markdown="0">\(A\)</span> from their leading right singular vectors and keeps <span class="math-inline" markdown="0">\(B_0=0\)</span>. Its <span class="math-inline" markdown="0">\(\rho=1\)</span> configuration retains uniform ranks, giving a direct comparison of activation-based and random initialization at the same parameter count. [Explained Variance Adaptation, §§3.2–3.5](https://arxiv.org/html/2410.07170)
-
-Published experiments make the consequences concrete. Each row below is a comparison within the cited study; the reported results are task accuracies.
-
-| Factorization choice tested | Model and training setup | Reported result |
-|---|---|---|
-| Which factor starts at zero | RoBERTa-large on MNLI; <span class="math-inline" markdown="0">\(r=8\)</span>, FP16, three seeds; learning rate searched for each initialization | <span class="math-inline" markdown="0">\(A_0=0\)</span>: 89.47%; <span class="math-inline" markdown="0">\(B_0=0\)</span>: 90.69%. [Hayou et al., §4.1 and Figure 4](https://proceedings.neurips.cc/paper_files/paper/2024/hash/d4387c37b3b06e55f86eccdb8cd1f829-Abstract-Conference.html) |
-| Gradient-aligned initialization and stable scaling | Llama-2-7B, MetaMathQA training, GSM8K evaluation; <span class="math-inline" markdown="0">\(r=8\)</span>, three seeds | LoRA: 42.08% → LoRA-GA: 53.60%. [LoRA-GA, Table 2](https://arxiv.org/html/2407.05000) |
-| Activation-based initialization at fixed rank and parameter count | Llama-2-7B, MetaMathQA training, GSM8K evaluation; <span class="math-inline" markdown="0">\(r=16\)</span>, 40.6M trainable parameters each, three seeds | LoRA: 59.7% → EVA (<span class="math-inline" markdown="0">\(\rho=1\)</span>): 61.9%. [EVA, Table 11](https://arxiv.org/html/2410.07170) |
-| Transformation-invariant factor optimization | Gemma-7B on GSM8K; <span class="math-inline" markdown="0">\(r=16\)</span>; learning rate searched for each optimizer | Adam: 48.37% → LoRA-RITE: 55.50%. [LoRA-RITE, §5 and Table 2](https://arxiv.org/html/2410.20625) |
-
-Together with LoRA+, these studies identify the optimization work introduced by factorization: choose a basis, calibrate its scale, balance its factors, and correct the geometry of their updates. SparseLeaf places the design decision directly on the support. Once the connections are selected, zero increments and zero Adam moments are enough to start learning in their native coordinates. **Preserve the pretrained computation, and spend the learning budget on independently changing its connections.**
-
-The difference is visible in learned weights as well. Shuttleworth and colleagues find that LoRA and full fine-tuning produce distinct spectral structures even at similar downstream performance. LoRA introduces prominent singular vectors that differ sharply from those of the pretrained model, which the authors call *intruder dimensions*. A parameterization shapes both the path of learning and the structure of its solution. [LoRA vs Full Fine-tuning: An Illusion of Equivalence, §3](https://arxiv.org/html/2410.21228v3)
-
 ### Backpropagation at connection granularity
 
 For a token batch <span class="math-inline" markdown="0">\(X\in\mathbb R^{T\times n}\)</span> and upstream gradient <span class="math-inline" markdown="0">\(D\in\mathbb R^{T\times m}\)</span>, the selected parameter gradient is
@@ -685,7 +801,41 @@ The implementation can compute these <span class="math-inline" markdown="0">\(K\
 
 The resulting learning rule is local in its parameterization and network-wide in its computation. Each plastic connection has its own value, gradient, and adaptive history; the surrounding network continues to participate in the forward and backward passes.
 
-## 5. Which Connections Should Be Plastic?
+<span id="appendix-b-a-sparse-mask-can-produce-a-high-rank-step"></span>
+
+### A sparse mask can produce a high-rank step
+
+For one example in a linear layer, the weight gradient is an outer product:
+
+<div class="math-display" markdown="0">
+\[
+G=\delta x^\top.
+\]
+</div>
+
+With a binary coordinate mask <span class="math-inline" markdown="0">\(M\)</span>, a selected-coordinate gradient-descent step is
+
+<div class="math-display" markdown="0">
+\[
+U=-\eta M\odot(\delta x^\top)
+=-\eta\operatorname{diag}(\delta)\,
+M\,\operatorname{diag}(x).
+\]
+</div>
+
+Take nonzero entries in <span class="math-inline" markdown="0">\(\delta\)</span> and <span class="math-inline" markdown="0">\(x\)</span>, and nonzero <span class="math-inline" markdown="0">\(\eta\)</span>. The two diagonal matrices are invertible, giving
+
+<div class="math-display" markdown="0">
+\[
+\operatorname{rank}(U)=\operatorname{rank}(M).
+\]
+</div>
+
+For a square layer with <span class="math-inline" markdown="0">\(M=I_d\)</span>, the step changes <span class="math-inline" markdown="0">\(d\)</span> coordinates and has rank <span class="math-inline" markdown="0">\(d\)</span>. The coordinate mask has converted a rank-one gradient into a sparse full-rank update. Sparsity and rank describe different structures even at the level of an individual learning step.
+
+<span id="5-which-connections-should-be-plastic"></span>
+
+## 4. Which Connections Should Be Plastic?
 
 Once sparsity becomes an optimization constraint, support selection becomes a question about learning: which connections can jointly produce the changes a task requires?
 
@@ -853,7 +1003,9 @@ The experiments below use a concrete, reproducible allocation rule: within each 
 
 Selection determines where learning may occur. The gradients determine how those connections change.
 
-## 6. What a Small Set of Connections Learns
+<span id="6-what-a-small-set-of-connections-learns"></span>
+
+## 5. What a Small Set of Connections Learns
 
 The experiments express learning capacity through a direct variable: the number of plastic connections.
 
@@ -903,7 +1055,9 @@ The recorded runs keep base-weight gradients at zero and maintain optimizer mome
 
 Together, the SFT and RL results demonstrate a common learning interface. Supervised errors and reward signals both reach a small collection of independent connections, while the complete pretrained network carries out the computation.
 
-## The Engineering Conveniences of Coordinate Sparsity
+<span id="the-engineering-conveniences-of-coordinate-sparsity"></span>
+
+## 6. The Engineering Conveniences of Coordinate Sparsity
 
 The parameterization also determines what engineers must store, schedule, differentiate, and move. LoRA's trainable-parameter percentage compresses four different bills into one attractive number: arithmetic, memory traffic, batching, and persistent state. Coordinate sparsity changes the objects behind each bill: learned projection pairs become indexed connection values, and the support becomes reusable execution metadata.
 
@@ -1021,60 +1175,6 @@ A row-grouped kernel gathers the selected inputs, multiplies by their increment 
 
 Writing <span class="math-inline" markdown="0">\(P=r(m+n)\)</span>, the forward arithmetic becomes <span class="math-inline" markdown="0">\(2TK\)</span> connection FLOPs in place of <span class="math-inline" markdown="0">\(2TP\)</span> factor FLOPs. Reducing <span class="math-inline" markdown="0">\(K\)</span> removes connections from the work list. It does not squeeze a learned projection into an increasingly narrow matrix shape. This targets both the amount of adapter work and its two-stage dependency.
 
-### From tenant–expert fragments to a shared coordinate schedule
-
-With <span class="math-inline" markdown="0">\(E\)</span> routed experts, top-<span class="math-inline" markdown="0">\(k\)</span> routing, <span class="math-inline" markdown="0">\(U\)</span> tenants, and <span class="math-inline" markdown="0">\(T\)</span> token rows, balanced routing gives average group sizes
-
-<div class="math-display" markdown="0">
-\[
-q_{\mathrm{expert}}=\frac{Tk}{E},
-\qquad
-q_{\mathrm{tenant,expert}}=\frac{Tk}{UE}.
-\]
-</div>
-
-The base expert can process tokens from different tenants together. Independent tenant adapters have different factors, so their reuse groups are tenant–expert pairs.
-
-Take <span class="math-inline" markdown="0">\(T=512\)</span>, <span class="math-inline" markdown="0">\(k=2\)</span>, <span class="math-inline" markdown="0">\(E=64\)</span>, and <span class="math-inline" markdown="0">\(U=16\)</span>. The base has 16 routed tokens per expert on average. The adapters have one routed token per tenant–expert cell on average. The apparent 512-token batch has become a grid of tiny adapter problems.
-
-Grouped and fused kernels pack these fragments into fewer launches. They do not make different tenants reuse the same factor values. Increasing the expert count expands the collection of adapter states while reducing the token reuse available to each expert. Increasing the tenant count repeats that pressure.
-
-Coordinate sparsity separates the execution structure from the tenant's learned values. For a shared support <span class="math-inline" markdown="0">\(S_e=\{(i_{e,k},j_{e,k})\}_{k=1}^{K_e}\)</span> in one expert projection,
-
-<div class="math-display" markdown="0">
-\[
-(\Delta y_{t,e})_i
-=\sum_{\substack{1\le k\le K_e\\i_{e,k}=i}}
-\theta_{u(t),e,k}\,(x_{t,e})_{j_{e,k}}.
-\]
-</div>
-
-The indices and output-reduction pattern are identical across tenants. The tenant identifier selects a value vector, not a new pair of learned matrix contractions. This gives a fused kernel a scheduling key of **expert plus coordinate block**: traverse the expert's token batch using one coordinate schedule and fetch each token's tenant-specific values. In the example above, that schedule spans the expert's 16 tokens instead of creating a separate projection chain for every one-token tenant–expert cell.
-
-The same locality determines device placement. Put each increment on the device that owns its base-weight coordinate. Expert-local corrections join the existing expert output; tensor-parallel partial corrections join the base layer's existing output reduction. There is no additional rank-dimensional intermediate to assemble across shards.
-
-### From adapter cache pressure to sparse value tables
-
-Merging an adapter materializes a tenant-specific dense weight <span class="math-inline" markdown="0">\(W_0+B_uA_u\)</span>. Different tenants then need different merged weights. Keeping one shared base instead leaves tenant-specific adapter computation on the serving path.
-
-This is why multi-LoRA serving requires its own systems machinery. Punica introduces segmented gather matrix-vector multiplication to batch adapter work and group requests using the same factors. S-LoRA manages adapter weights and KV caches in one paged memory pool, adds heterogeneous kernels, and prefetches adapters. Adapter residency consumes memory that could otherwise hold longer contexts or more concurrent requests. Clustering requests by adapter improves reuse by changing who gets served together—and when. [Punica, §§3–4](https://arxiv.org/abs/2310.18547), [S-LoRA, §§4–5](https://arxiv.org/abs/2311.03285)
-
-The cost is a chain: more adapter identities mean more distinct weights, weaker per-adapter reuse, and more pressure on cache capacity and scheduling. Loading, eviction, transfer, and batching become part of the customization bill.
-
-With a fixed shared coordinate support, tenant-specific storage is a value table. For one projection, let <span class="math-inline" markdown="0">\(B_S\)</span> be the shared coordinate-metadata size and <span class="math-inline" markdown="0">\(b_w\)</span> the number of bytes per learned value. Adapter storage for <span class="math-inline" markdown="0">\(U\)</span> resident tenants is
-
-<div class="math-display" markdown="0">
-\[
-M_{\mathrm{LoRA}}=Ub_wP,
-\qquad
-M_{\mathrm{coordinate}}=B_S+Ub_wK.
-\]
-</div>
-
-Each new tenant adds <span class="math-inline" markdown="0">\(K\)</span> values; the index table and reduction layout are reused. Smaller coordinate budgets therefore translate directly into smaller resident payloads, more room for KV caches, and fewer bytes on cache misses. Version updates use that same coordinate map, transmitting replacement increment values without rebuilding a factorized weight change.
-
-For a materialized model version, patching touches the selected coordinates. A low-rank merge computes <span class="math-inline" markdown="0">\(BA\)</span> and writes a generally dense change; a coordinate patch writes <span class="math-inline" markdown="0">\(K\)</span> locations. SHiRA demonstrates this sparse-write approach through indexed adapter switching. [Sparse High Rank Adapters, §3.2](https://arxiv.org/html/2406.13175)
-
 ### From factor gradients to direct connection gradients
 
 Let <span class="math-inline" markdown="0">\(D=\partial\mathcal L/\partial Y\)</span> and reuse <span class="math-inline" markdown="0">\(Z=XA^\top\)</span>. LoRA's backward pass contains
@@ -1148,6 +1248,60 @@ The shared base computation is explicit; the adapter's forward, parameter-gradie
 
 Activation retention also becomes an explicit support-layout problem. Define <span class="math-inline" markdown="0">\(J(S)=\{j_k:k=1,\ldots,K\}\)</span>. A support-aware backward pass saves <span class="math-inline" markdown="0">\(X_{:,J(S)}\)</span> for the selected parameter dot products, requiring <span class="math-inline" markdown="0">\(bT&#124;J(S)&#124;\)</span> input-activation bytes. The engineer can optimize column coverage and reuse directly. Rank reduction offers no equivalent control over the full-width <span class="math-inline" markdown="0">\(X\)</span> needed to train <span class="math-inline" markdown="0">\(A\)</span>.
 
+### From tenant–expert fragments to a shared coordinate schedule
+
+With <span class="math-inline" markdown="0">\(E\)</span> routed experts, top-<span class="math-inline" markdown="0">\(k\)</span> routing, <span class="math-inline" markdown="0">\(U\)</span> tenants, and <span class="math-inline" markdown="0">\(T\)</span> token rows, balanced routing gives average group sizes
+
+<div class="math-display" markdown="0">
+\[
+q_{\mathrm{expert}}=\frac{Tk}{E},
+\qquad
+q_{\mathrm{tenant,expert}}=\frac{Tk}{UE}.
+\]
+</div>
+
+The base expert can process tokens from different tenants together. Independent tenant adapters have different factors, so their reuse groups are tenant–expert pairs.
+
+Take <span class="math-inline" markdown="0">\(T=512\)</span>, <span class="math-inline" markdown="0">\(k=2\)</span>, <span class="math-inline" markdown="0">\(E=64\)</span>, and <span class="math-inline" markdown="0">\(U=16\)</span>. The base has 16 routed tokens per expert on average. The adapters have one routed token per tenant–expert cell on average. The apparent 512-token batch has become a grid of tiny adapter problems.
+
+Grouped and fused kernels pack these fragments into fewer launches. They do not make different tenants reuse the same factor values. Increasing the expert count expands the collection of adapter states while reducing the token reuse available to each expert. Increasing the tenant count repeats that pressure.
+
+Coordinate sparsity separates the execution structure from the tenant's learned values. For a shared support <span class="math-inline" markdown="0">\(S_e=\{(i_{e,k},j_{e,k})\}_{k=1}^{K_e}\)</span> in one expert projection,
+
+<div class="math-display" markdown="0">
+\[
+(\Delta y_{t,e})_i
+=\sum_{\substack{1\le k\le K_e\\i_{e,k}=i}}
+\theta_{u(t),e,k}\,(x_{t,e})_{j_{e,k}}.
+\]
+</div>
+
+The indices and output-reduction pattern are identical across tenants. The tenant identifier selects a value vector, not a new pair of learned matrix contractions. This gives a fused kernel a scheduling key of **expert plus coordinate block**: traverse the expert's token batch using one coordinate schedule and fetch each token's tenant-specific values. In the example above, that schedule spans the expert's 16 tokens instead of creating a separate projection chain for every one-token tenant–expert cell.
+
+The same locality determines device placement. Put each increment on the device that owns its base-weight coordinate. Expert-local corrections join the existing expert output; tensor-parallel partial corrections join the base layer's existing output reduction. There is no additional rank-dimensional intermediate to assemble across shards.
+
+### From adapter cache pressure to sparse value tables
+
+Merging an adapter materializes a tenant-specific dense weight <span class="math-inline" markdown="0">\(W_0+B_uA_u\)</span>. Different tenants then need different merged weights. Keeping one shared base instead leaves tenant-specific adapter computation on the serving path.
+
+This is why multi-LoRA serving requires its own systems machinery. Punica introduces segmented gather matrix-vector multiplication to batch adapter work and group requests using the same factors. S-LoRA manages adapter weights and KV caches in one paged memory pool, adds heterogeneous kernels, and prefetches adapters. Adapter residency consumes memory that could otherwise hold longer contexts or more concurrent requests. Clustering requests by adapter improves reuse by changing who gets served together—and when. [Punica, §§3–4](https://arxiv.org/abs/2310.18547), [S-LoRA, §§4–5](https://arxiv.org/abs/2311.03285)
+
+The cost is a chain: more adapter identities mean more distinct weights, weaker per-adapter reuse, and more pressure on cache capacity and scheduling. Loading, eviction, transfer, and batching become part of the customization bill.
+
+With a fixed shared coordinate support, tenant-specific storage is a value table. For one projection, let <span class="math-inline" markdown="0">\(B_S\)</span> be the shared coordinate-metadata size and <span class="math-inline" markdown="0">\(b_w\)</span> the number of bytes per learned value. Adapter storage for <span class="math-inline" markdown="0">\(U\)</span> resident tenants is
+
+<div class="math-display" markdown="0">
+\[
+M_{\mathrm{LoRA}}=Ub_wP,
+\qquad
+M_{\mathrm{coordinate}}=B_S+Ub_wK.
+\]
+</div>
+
+Each new tenant adds <span class="math-inline" markdown="0">\(K\)</span> values; the index table and reduction layout are reused. Smaller coordinate budgets therefore translate directly into smaller resident payloads, more room for KV caches, and fewer bytes on cache misses. Version updates use that same coordinate map, transmitting replacement increment values without rebuilding a factorized weight change.
+
+For a materialized model version, patching touches the selected coordinates. A low-rank merge computes <span class="math-inline" markdown="0">\(BA\)</span> and writes a generally dense change; a coordinate patch writes <span class="math-inline" markdown="0">\(K\)</span> locations. SHiRA demonstrates this sparse-write approach through indexed adapter switching. [Sparse High Rank Adapters, §3.2](https://arxiv.org/html/2406.13175)
+
 ### From the rank-one floor to one-connection budgets
 
 Rank is an integer. For a fixed collection <span class="math-inline" markdown="0">\(\mathcal T\)</span> of independently adapted matrices, the smallest nonzero standard LoRA allocation to every target is
@@ -1217,165 +1371,40 @@ The important unit is the plastic connection. Its location determines where a ch
 
 **Dense capacity. Sparse plasticity. High-rank updates.**
 
----
-
-## Appendix A. The First-Step Geometry of Gaussian LoRA Initialization
-
-Take a deterministic forward pass without adapter dropout, unit adapter scaling, ordinary gradient descent, <span class="math-inline" markdown="0">\(B_0=0\)</span>, and independent entries <span class="math-inline" markdown="0">\(A_{0,ij}\sim\mathcal N(0,1/r)\)</span>. The base-model gradient <span class="math-inline" markdown="0">\(G\)</span> is fixed and independent of <span class="math-inline" markdown="0">\(A_0\)</span>.
-
-Write
-
-<div class="math-display" markdown="0">
-\[
-Q=A_0^\top A_0
-=\frac1r\sum_{\ell=1}^{r}z_\ell z_\ell^\top,
-\qquad
-z_\ell\sim\mathcal N(0,I_n).
-\]
-</div>
-
-Then <span class="math-inline" markdown="0">\(\mathbb E Q=I_n\)</span>. For one Gaussian vector,
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E(zz^\top)^2=(n+2)I_n,
-\]
-</div>
-
-because each diagonal entry has expectation
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E\left[z_i^2\sum_j z_j^2\right]
-=3+(n-1)=n+2,
-\]
-</div>
-
-and off-diagonal expectations vanish. Independence gives
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E Q^2
-=\frac{r(n+2)+r(r-1)}{r^2}I_n
-=\left(1+\frac{n+1}{r}\right)I_n.
-\]
-</div>
-
-Consequently,
-
-<div class="math-display" markdown="0">
-\[
-\mathbb E(Q-I_n)^2=\frac{n+1}{r}I_n.
-\]
-</div>
-
-The effective first update is <span class="math-inline" markdown="0">\(\Delta W_1=-\eta GQ\)</span>, so
-
-<div class="math-display" markdown="0">
-\[
-\begin{aligned}
-\mathbb E\&#124;\Delta W_1+\eta G\&#124;_F^2
-&amp;=\eta^2\operatorname{tr}
-\left(G\,\mathbb E[(Q-I_n)^2]G^\top\right)\\
-&amp;=\eta^2\frac{n+1}{r}\&#124;G\&#124;_F^2.
-\end{aligned}
-\]
-</div>
-
-Averaging <span class="math-inline" markdown="0">\(M\)</span> independent initialized updates divides this mean squared deviation by <span class="math-inline" markdown="0">\(M\)</span>. The factorization thus has both an exact mean update and a computable distribution around it.
-
-### The initial-subspace projection
-
-For <span class="math-inline" markdown="0">\(1\le r\le n\)</span>, a Gaussian <span class="math-inline" markdown="0">\(A_0\)</span> has full row rank almost surely. Its row-space projector <span class="math-inline" markdown="0">\(\Pi_0\)</span> satisfies <span class="math-inline" markdown="0">\(\Pi_0^\top=\Pi_0\)</span>, <span class="math-inline" markdown="0">\(\Pi_0^2=\Pi_0\)</span>, and <span class="math-inline" markdown="0">\(\operatorname{tr}\Pi_0=r\)</span>. Rotational invariance implies <span class="math-inline" markdown="0">\(\mathbb E\Pi_0=cI_n\)</span>; taking traces gives <span class="math-inline" markdown="0">\(c=r/n\)</span>.
-
-Orthogonal projection onto <span class="math-inline" markdown="0">\(\mathcal T_0=\{HA_0\}\)</span> acts on each row of <span class="math-inline" markdown="0">\(G\)</span>, so
-
-<div class="math-display" markdown="0">
-\[
-\arg\min_{M\in\mathcal T_0}\&#124;G-M\&#124;_F^2=G\Pi_0.
-\]
-</div>
-
-Idempotence then yields
-
-<div class="math-display" markdown="0">
-\[
-\begin{aligned}
-\mathbb E\&#124;G\Pi_0\&#124;_F^2
-&amp;=\operatorname{tr}(G\,\mathbb E\Pi_0\,G^\top)
-=\frac rn\&#124;G\&#124;_F^2,\\
-\mathbb E\&#124;G-G\Pi_0\&#124;_F^2
-&amp;=\left(1-\frac rn\right)\&#124;G\&#124;_F^2.
-\end{aligned}
-\]
-</div>
-
-This isolates the missing-direction cost from the random scaling of the unnormalized Gram matrix.
-
-## Appendix B. A Sparse Mask Can Produce a High-Rank Step
-
-For one example in a linear layer, the weight gradient is an outer product:
-
-<div class="math-display" markdown="0">
-\[
-G=\delta x^\top.
-\]
-</div>
-
-With a binary coordinate mask <span class="math-inline" markdown="0">\(M\)</span>, a selected-coordinate gradient-descent step is
-
-<div class="math-display" markdown="0">
-\[
-U=-\eta M\odot(\delta x^\top)
-=-\eta\operatorname{diag}(\delta)\,
-M\,\operatorname{diag}(x).
-\]
-</div>
-
-Take nonzero entries in <span class="math-inline" markdown="0">\(\delta\)</span> and <span class="math-inline" markdown="0">\(x\)</span>, and nonzero <span class="math-inline" markdown="0">\(\eta\)</span>. The two diagonal matrices are invertible, giving
-
-<div class="math-display" markdown="0">
-\[
-\operatorname{rank}(U)=\operatorname{rank}(M).
-\]
-</div>
-
-For a square layer with <span class="math-inline" markdown="0">\(M=I_d\)</span>, the step changes <span class="math-inline" markdown="0">\(d\)</span> coordinates and has rank <span class="math-inline" markdown="0">\(d\)</span>. The coordinate mask has converted a rank-one gradient into a sparse full-rank update. Sparsity and rank describe different structures even at the level of an individual learning step.
-
 ## References
 
 1. Hu, E. J., et al. (2021). [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685). arXiv:2106.09685; ICLR 2022.
 2. Eckart, C., and Young, G. (1936). [The Approximation of One Matrix by Another of Lower Rank](https://www.cambridge.org/core/journals/psychometrika/article/approximation-of-one-matrix-by-another-of-lower-rank/B29672E1EDD0FA1B7611D4DFAFC321B3). *Psychometrika*, 1, 211–218.
 3. Zeng, Y., and Lee, K. (2024). [The Expressive Power of Low-Rank Adaptation](https://arxiv.org/html/2310.17513). ICLR.
 4. Aghajanyan, A., Gupta, S., and Zettlemoyer, L. (2021). [Intrinsic Dimensionality Explains the Effectiveness of Language Model Fine-Tuning](https://aclanthology.org/2021.acl-long.568/). ACL-IJCNLP.
-5. Matsuzaki, M., Honkura, N., Ellis-Davies, G. C. R., and Kasai, H. (2004). [Structural basis of long-term potentiation in single dendritic spines](https://pmc.ncbi.nlm.nih.gov/articles/PMC4158816/). *Nature*, 429, 761–766.
-6. Guo, D., Rush, A. M., and Kim, Y. (2021). [Parameter-Efficient Transfer Learning with Diff Pruning](https://aclanthology.org/2021.acl-long.378/). ACL-IJCNLP.
-7. Rios, J., Dognin, P., Luss, R., and Natesan Ramamurthy, K. (2025). [Sparsity May Be All You Need: Sparse Random Parameter Adaptation](https://aclanthology.org/2025.findings-emnlp.1013/). Findings of EMNLP.
-8. Bhardwaj, K., et al. (2024; revised 2025). [Sparse High Rank Adapters](https://arxiv.org/html/2406.13175). arXiv:2406.13175.
-9. Liu, X., et al. (2025). [Refining Salience-Aware Sparse Fine-Tuning Strategies for Language Models](https://aclanthology.org/2025.acl-long.1541/). ACL.
-10. Kingma, D. P., and Ba, J. (2015). [Adam: A Method for Stochastic Optimization](https://arxiv.org/abs/1412.6980). ICLR.
-11. Duchi, J., Hazan, E., and Singer, Y. (2011). [Adaptive Subgradient Methods for Online Learning and Stochastic Optimization](https://www.jmlr.org/papers/v12/duchi11a.html). *Journal of Machine Learning Research*, 12, 2121–2159.
-12. Hayou, S., Ghosh, N., and Yu, B. (2024). [The Impact of Initialization on LoRA Finetuning Dynamics](https://proceedings.neurips.cc/paper_files/paper/2024/hash/d4387c37b3b06e55f86eccdb8cd1f829-Abstract-Conference.html). NeurIPS.
-13. Shuttleworth, R., Andreas, J., Torralba, A., and Sharma, P. (2024; revised 2025). [LoRA vs Full Fine-tuning: An Illusion of Equivalence](https://arxiv.org/html/2410.21228v3). arXiv:2410.21228, version 3.
-14. Williams, R. J. (1992). [Simple statistical gradient-following algorithms for connectionist reinforcement learning](https://link.springer.com/article/10.1007/BF00992696). *Machine Learning*, 8, 229–256.
-15. Mukherjee, S., Yuan, L., Hakkani-Tür, D., and Peng, H. (2025). [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models](https://arxiv.org/html/2505.11711v2). arXiv:2505.11711, version 2.
-16. Jacot, A., Gabriel, F., and Hongler, C. (2018). [Neural Tangent Kernel: Convergence and Generalization in Neural Networks](https://papers.nips.cc/paper/2018/file/5a4be1fa34e62bb8a6ec6b91d2462f5a-Paper.pdf). NeurIPS.
-17. Nutini, J., Schmidt, M., Laradji, I., Friedlander, M., and Koepke, H. (2015). [Coordinate Descent Converges Faster with the Gauss-Southwell Rule Than Random Selection](https://proceedings.mlr.press/v37/nutini15.html). ICML.
-18. Sung, Y.-L., Nair, V., and Raffel, C. (2021). [Training Neural Networks with Fixed Sparse Masks](https://proceedings.neurips.cc/paper/2021/hash/cb2653f548f8709598e8b5156738cc51-Abstract.html). NeurIPS.
-19. Verma, S., et al. (2024). [Seamlessly Deploying a Swarm of LoRA Adapters with NVIDIA NIM](https://developer.nvidia.com/blog/seamlessly-deploying-a-swarm-of-lora-adapters-with-nvidia-nim/). NVIDIA Technical Blog, June 7.
-20. Chen, L., Ye, Z., Wu, Y., Zhuo, D., Ceze, L., and Krishnamurthy, A. (2023). [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547). arXiv:2310.18547; MLSys 2024.
-21. Sheng, Y., et al. (2023; revised 2024). [S-LoRA: Serving Thousands of Concurrent LoRA Adapters](https://arxiv.org/abs/2311.03285). arXiv:2311.03285; MLSys 2024.
-22. Chen, G., He, Y., Hu, Y., Yuan, K., and Yuan, B. (2025). [CE-LoRA: Computation-Efficient LoRA Fine-Tuning for Language Models](https://arxiv.org/html/2502.01378). arXiv:2502.01378.
-23. Zhang, L., Zhang, L., Shi, S., Chu, X., and Li, B. (2023). [LoRA-FA: Memory-efficient Low-rank Adaptation for Large Language Models Fine-tuning](https://arxiv.org/html/2308.03303v1). arXiv:2308.03303, version 1.
-24. Kimi Team (2025; revised 2026). [Kimi K2: Open Agentic Intelligence](https://arxiv.org/html/2507.20534). arXiv:2507.20534.
-25. Hayou, S., Ghosh, N., and Yu, B. (2024). [LoRA+: Efficient Low Rank Adaptation of Large Models](https://proceedings.mlr.press/v235/hayou24a.html). ICML, PMLR 235, 17783–17806.
-26. Wang, S., Yu, L., and Li, J. (2024). [LoRA-GA: Low-Rank Adaptation with Gradient Approximation](https://arxiv.org/html/2407.05000). arXiv:2407.05000; NeurIPS.
-27. Meng, F., Wang, Z., and Zhang, M. (2024; revised 2025). [PiSSA: Principal Singular Values and Singular Vectors Adaptation of Large Language Models](https://arxiv.org/html/2404.02948). arXiv:2404.02948; NeurIPS 2024.
-28. Hao, Y., Cao, Y., and Mou, L. (2024). [Flora: Low-Rank Adapters Are Secretly Gradient Compressors](https://proceedings.mlr.press/v235/hao24a.html). ICML, PMLR 235, 17554–17571.
-29. Kalajdzievski, D. (2023). [A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA](https://arxiv.org/html/2312.03732). arXiv:2312.03732.
-30. Yen, J.-N., et al. (2025). [LoRA Done RITE: Robust Invariant Transformation Equilibration for LoRA Optimization](https://arxiv.org/html/2410.20625). ICLR; arXiv:2410.20625.
-31. Paischer, F., Hauzenberger, L., Schmied, T., Alkin, B., Deisenroth, M. P., and Hochreiter, S. (2025). [Parameter Efficient Fine-tuning via Explained Variance Adaptation](https://arxiv.org/html/2410.07170). NeurIPS; arXiv:2410.07170.
-32. Wang, Z., Liang, J., He, R., Wang, Z., and Tan, T. (2025). [LoRA-Pro: Are Low-Rank Adapters Properly Optimized?](https://arxiv.org/html/2407.18242). ICLR; arXiv:2407.18242.
-33. Micikevicius, P., et al. (2018). [Mixed Precision Training](https://arxiv.org/abs/1710.03740). ICLR.
-34. PyTorch Contributors (2026). [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad). PyTorch 2.14 documentation.
-35. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. (2020). [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/html/1910.02054v3). arXiv:1910.02054, version 3.
+5. Bhardwaj, K., et al. (2024; revised 2025). [Sparse High Rank Adapters](https://arxiv.org/html/2406.13175). arXiv:2406.13175.
+6. Liu, X., et al. (2025). [Refining Salience-Aware Sparse Fine-Tuning Strategies for Language Models](https://aclanthology.org/2025.acl-long.1541/). ACL.
+7. Hayou, S., Ghosh, N., and Yu, B. (2024). [The Impact of Initialization on LoRA Finetuning Dynamics](https://proceedings.neurips.cc/paper_files/paper/2024/hash/d4387c37b3b06e55f86eccdb8cd1f829-Abstract-Conference.html). NeurIPS.
+8. Hao, Y., Cao, Y., and Mou, L. (2024). [Flora: Low-Rank Adapters Are Secretly Gradient Compressors](https://proceedings.mlr.press/v235/hao24a.html). ICML, PMLR 235, 17554–17571.
+9. Kalajdzievski, D. (2023). [A Rank Stabilization Scaling Factor for Fine-Tuning with LoRA](https://arxiv.org/html/2312.03732). arXiv:2312.03732.
+10. Hayou, S., Ghosh, N., and Yu, B. (2024). [LoRA+: Efficient Low Rank Adaptation of Large Models](https://proceedings.mlr.press/v235/hayou24a.html). ICML, PMLR 235, 17783–17806.
+11. Yen, J.-N., et al. (2025). [LoRA Done RITE: Robust Invariant Transformation Equilibration for LoRA Optimization](https://arxiv.org/html/2410.20625). ICLR; arXiv:2410.20625.
+12. Wang, Z., Liang, J., He, R., Wang, Z., and Tan, T. (2025). [LoRA-Pro: Are Low-Rank Adapters Properly Optimized?](https://arxiv.org/html/2407.18242). ICLR; arXiv:2407.18242.
+13. Wang, S., Yu, L., and Li, J. (2024). [LoRA-GA: Low-Rank Adaptation with Gradient Approximation](https://arxiv.org/html/2407.05000). arXiv:2407.05000; NeurIPS.
+14. Meng, F., Wang, Z., and Zhang, M. (2024; revised 2025). [PiSSA: Principal Singular Values and Singular Vectors Adaptation of Large Language Models](https://arxiv.org/html/2404.02948). arXiv:2404.02948; NeurIPS 2024.
+15. Paischer, F., Hauzenberger, L., Schmied, T., Alkin, B., Deisenroth, M. P., and Hochreiter, S. (2025). [Parameter Efficient Fine-tuning via Explained Variance Adaptation](https://arxiv.org/html/2410.07170). NeurIPS; arXiv:2410.07170.
+16. Shuttleworth, R., Andreas, J., Torralba, A., and Sharma, P. (2024; revised 2025). [LoRA vs Full Fine-tuning: An Illusion of Equivalence](https://arxiv.org/html/2410.21228v3). arXiv:2410.21228, version 3.
+17. Matsuzaki, M., Honkura, N., Ellis-Davies, G. C. R., and Kasai, H. (2004). [Structural basis of long-term potentiation in single dendritic spines](https://pmc.ncbi.nlm.nih.gov/articles/PMC4158816/). *Nature*, 429, 761–766.
+18. Guo, D., Rush, A. M., and Kim, Y. (2021). [Parameter-Efficient Transfer Learning with Diff Pruning](https://aclanthology.org/2021.acl-long.378/). ACL-IJCNLP.
+19. Rios, J., Dognin, P., Luss, R., and Natesan Ramamurthy, K. (2025). [Sparsity May Be All You Need: Sparse Random Parameter Adaptation](https://aclanthology.org/2025.findings-emnlp.1013/). Findings of EMNLP.
+20. Kingma, D. P., and Ba, J. (2015). [Adam: A Method for Stochastic Optimization](https://arxiv.org/abs/1412.6980). ICLR.
+21. Duchi, J., Hazan, E., and Singer, Y. (2011). [Adaptive Subgradient Methods for Online Learning and Stochastic Optimization](https://www.jmlr.org/papers/v12/duchi11a.html). *Journal of Machine Learning Research*, 12, 2121–2159.
+22. Williams, R. J. (1992). [Simple statistical gradient-following algorithms for connectionist reinforcement learning](https://link.springer.com/article/10.1007/BF00992696). *Machine Learning*, 8, 229–256.
+23. Mukherjee, S., Yuan, L., Hakkani-Tür, D., and Peng, H. (2025). [Reinforcement Learning Finetunes Small Subnetworks in Large Language Models](https://arxiv.org/html/2505.11711v2). arXiv:2505.11711, version 2.
+24. Jacot, A., Gabriel, F., and Hongler, C. (2018). [Neural Tangent Kernel: Convergence and Generalization in Neural Networks](https://papers.nips.cc/paper/2018/file/5a4be1fa34e62bb8a6ec6b91d2462f5a-Paper.pdf). NeurIPS.
+25. Nutini, J., Schmidt, M., Laradji, I., Friedlander, M., and Koepke, H. (2015). [Coordinate Descent Converges Faster with the Gauss-Southwell Rule Than Random Selection](https://proceedings.mlr.press/v37/nutini15.html). ICML.
+26. Sung, Y.-L., Nair, V., and Raffel, C. (2021). [Training Neural Networks with Fixed Sparse Masks](https://proceedings.neurips.cc/paper/2021/hash/cb2653f548f8709598e8b5156738cc51-Abstract.html). NeurIPS.
+27. Micikevicius, P., et al. (2018). [Mixed Precision Training](https://arxiv.org/abs/1710.03740). ICLR.
+28. PyTorch Contributors (2026). [PyTorch Autograd: setting requires_grad](https://docs.pytorch.org/docs/2.14/notes/autograd.html#setting-requires-grad). PyTorch 2.14 documentation.
+29. Rajbhandari, S., Rasley, J., Ruwase, O., and He, Y. (2020). [ZeRO: Memory Optimizations Toward Training Trillion Parameter Models](https://arxiv.org/html/1910.02054v3). arXiv:1910.02054, version 3.
+30. Verma, S., et al. (2024). [Seamlessly Deploying a Swarm of LoRA Adapters with NVIDIA NIM](https://developer.nvidia.com/blog/seamlessly-deploying-a-swarm-of-lora-adapters-with-nvidia-nim/). NVIDIA Technical Blog, June 7.
+31. Chen, G., He, Y., Hu, Y., Yuan, K., and Yuan, B. (2025). [CE-LoRA: Computation-Efficient LoRA Fine-Tuning for Language Models](https://arxiv.org/html/2502.01378). arXiv:2502.01378.
+32. Zhang, L., Zhang, L., Shi, S., Chu, X., and Li, B. (2023). [LoRA-FA: Memory-efficient Low-rank Adaptation for Large Language Models Fine-tuning](https://arxiv.org/html/2308.03303v1). arXiv:2308.03303, version 1.
+33. Chen, L., Ye, Z., Wu, Y., Zhuo, D., Ceze, L., and Krishnamurthy, A. (2023). [Punica: Multi-Tenant LoRA Serving](https://arxiv.org/abs/2310.18547). arXiv:2310.18547; MLSys 2024.
+34. Sheng, Y., et al. (2023; revised 2024). [S-LoRA: Serving Thousands of Concurrent LoRA Adapters](https://arxiv.org/abs/2311.03285). arXiv:2311.03285; MLSys 2024.
+35. Kimi Team (2025; revised 2026). [Kimi K2: Open Agentic Intelligence](https://arxiv.org/html/2507.20534). arXiv:2507.20534.

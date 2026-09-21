@@ -474,7 +474,7 @@ For a causal backbone, this structural mask is combined with causal order *insid
 The result is one accelerator-friendly forward pass that produces every candidate score together. Packing removes repeated prefixes. Tree attention prevents cross-question and cross-candidate contamination. Typed heads normalize those scores into `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token generation loop.
 
 <figure id="figure-parallel-sampler" class="graf graf--figure">
-<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg" alt="Tree attention diagram showing a shared state branching into questions and isolated candidates, paired with an attention matrix in which each candidate reads only its ancestors and itself." width="1600" height="980" loading="lazy" decoding="async">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg?v=tree-attention-v1" alt="Tree attention diagram showing a shared state branching into questions and isolated candidates, paired with an attention matrix in which each candidate reads only its ancestors and itself." width="1600" height="980" loading="lazy" decoding="async">
 <figcaption>Figure 6. The packed token buffer is logically a tree: state → question → candidate. The mask exposes only a branch's ancestral path, so all candidates can be scored in one forward pass without seeing their siblings.</figcaption>
 </figure>
 

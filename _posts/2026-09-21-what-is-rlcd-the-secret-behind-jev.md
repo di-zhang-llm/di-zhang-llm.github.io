@@ -289,7 +289,7 @@ A lower Brier score can therefore come from better calibration, better separatio
 <figcaption>Figure 3. Brier score prices confidence, decomposes forecast quality, and closes the loop from observed outcomes to an operational decision policy.</figcaption>
 </figure>
 
-An RLCD implementation can use Brier score twice: as a training loss for the probability head and as a held-out objective for post-hoc calibration. With temperature scaling, the calibration parameter can be selected directly on validation outcomes:
+An RLCD implementation can apply Brier score to the decision probabilities during training and use it again as a held-out objective for post-hoc calibration. With temperature scaling, the calibration parameter can be selected directly on validation outcomes:
 
 <div class="math-display" markdown="0">
 \[
@@ -395,9 +395,73 @@ Jev is therefore a reward model generalized from “Which answer is better?” t
 <figcaption>Figure 5. Conventional stacks use the reward model behind the generator. Jev serves the evaluator itself: state and schema in, typed probability distributions out.</figcaption>
 </figure>
 
+## The Decision Head Produces the Utilities
+
+The Plackett–Luce equations leave the utility <span class="math-inline" markdown="0">\(u_\theta(x,a_i)\)</span> abstract. The decision head is the component that computes it.
+
+In [Jevre](https://github.com/trotsky1997/jevre), the encoder processes the state, question, and every candidate under the tree attention mask. The model mean-pools the normalized hidden states of the three spans:
+
+<div class="math-display" markdown="0">
+\[
+\bar{h}_S,
+\qquad
+\bar{h}_{Q_f},
+\qquad
+\bar{h}_{C_{f,i}}
+\]
+</div>
+
+For question <span class="math-inline" markdown="0">\(f\)</span>, the state and question form a query. Each candidate forms a key:
+
+<div class="math-display" markdown="0">
+\[
+q_f
+=
+W_q\bar{h}_S
++
+W_q\bar{h}_{Q_f},
+\qquad
+k_{f,i}
+=
+W_k\bar{h}_{C_{f,i}}
+\]
+</div>
+
+The candidate utility is their scaled inner product:
+
+<div class="math-display" markdown="0">
+\[
+u_{f,i}
+=
+\frac{q_f^\top k_{f,i}}{\sqrt{r}}
+\]
+</div>
+
+The released model uses <span class="math-inline" markdown="0">\(r=512\)</span>. This rank is the dimension of the learned interaction space; the encoder and decision head are trained together. A softmax across the candidates of the same question turns the utilities into the RLCD distribution:
+
+<div class="math-display" markdown="0">
+\[
+p_{f,i}
+=
+\frac{\exp u_{f,i}}
+{\sum_j \exp u_{f,j}}
+\]
+</div>
+
+<figure id="figure-decision-head" class="graf graf--figure">
+<img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-decision-head-utilities.svg" alt="Decision-head architecture showing pooled state and question representations forming a query, candidate representations forming keys, rank-512 compatibility producing utilities, and softmax returning typed probabilities." width="1600" height="920" loading="lazy" decoding="async">
+<figcaption>Figure 6. The decision head is a shared compatibility function: state and question form the query, each runtime candidate forms a key, and their rank-512 interaction produces the utilities normalized by Plackett–Luce.</figcaption>
+</figure>
+
+This head scores contextual representations rather than vocabulary labels. Candidate names and descriptions arrive at runtime as text, so the same parameters can score a new schema without adding a class-specific output layer. `Noul`, `Choice`, and `Score` all use these logits; the schema decoder determines how the resulting distribution is returned.
+
+Images enter through the state span and change <span class="math-inline" markdown="0">\(\bar{h}_S\)</span>, while the decision head stays unchanged. The same utility function therefore covers text and multimodal decisions. The full implementation is visible in [the scorer model](https://github.com/trotsky1997/jevre/blob/master/jevre/modeling.py) and the released [Jevre checkpoint](https://huggingface.co/di-zhang-fdu/jevre).
+
+The decision head is the bridge between representation learning and RLCD: the encoder builds state-, question-, and candidate-aware representations; the head turns their compatibility into utilities; Plackett–Luce and Brier training shape those utilities into calibrated decisions.
+
 ## Why Jev Can Run in Parallel
 
-Strip away the branding: Jev's **parallel sampler is sequence packing plus an attention mask**, followed by typed decision heads. This is the serving trick behind the speed claim.
+Strip away the branding: Jev's **parallel sampler is sequence packing plus an attention mask**, followed by one shared decision head and typed schema decoding. This is the serving trick behind the speed claim.
 
 Autoregressive language models represent an answer as a token sequence:
 
@@ -471,11 +535,11 @@ For a causal backbone, this structural mask is combined with causal order *insid
 \]
 </div>
 
-The result is one accelerator-friendly forward pass that produces every candidate score together. Packing removes repeated prefixes. Tree attention prevents cross-question and cross-candidate contamination. Typed heads normalize those scores into `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token generation loop.
+The result is one accelerator-friendly forward pass that produces every candidate score together. Packing removes repeated prefixes. Tree attention prevents cross-question and cross-candidate contamination. The decision head produces utilities, and the schema decoder returns them as `Noul`, `Choice`, or `Score` probabilities. There is no token-by-token generation loop.
 
 <figure id="figure-parallel-sampler" class="graf graf--figure">
 <img src="/images/blog/what-is-rlcd-the-secret-behind-jev/05-parallel-sampler-packing-mask.svg?v=tree-attention-v1" alt="Tree attention diagram showing a shared state branching into questions and isolated candidates, paired with an attention matrix in which each candidate reads only its ancestors and itself." width="1600" height="980" loading="lazy" decoding="async">
-<figcaption>Figure 6. The packed token buffer is logically a tree: state → question → candidate. The mask exposes only a branch's ancestral path, so all candidates can be scored in one forward pass without seeing their siblings.</figcaption>
+<figcaption>Figure 7. The packed token buffer is logically a tree: state → question → candidate. The mask exposes only a branch's ancestral path, so all candidates can be scored in one forward pass without seeing their siblings.</figcaption>
 </figure>
 
 This behavior is exactly the contract in [TypeSafe's documentation](https://docs.typesafe.ai/introduction): questions share the same state, are evaluated independently, and return in parallel. The mechanism itself is established Transformer engineering. Sequence packing with attention masks that prevent cross-contamination was already documented as a general throughput technique in the [sequence-packing literature](https://arxiv.org/abs/2107.02027).
@@ -490,7 +554,9 @@ TypeSafe's launch post names a “new model architecture” and a “parallel sa
 +
 \text{attention mask}
 +
-\text{typed decision heads}
+\text{decision head}
++
+\text{schema decoding}
 \]
 </div>
 
@@ -503,6 +569,8 @@ The complete system decomposition is therefore:
 \text{Jev}
 =
 \text{RLCD}
++
+\text{decision head}
 +
 \text{typed schemas}
 +
@@ -632,7 +700,7 @@ Calibration makes that distribution operational:
 \]
 </div>
 
-Jev packages the result as typed, parallel inference. It is a calibrated multiway reward model served as an API.
+Jev packages the result as typed, parallel inference. Its decision head turns contextual representations into candidate utilities, and RLCD turns those utilities into a calibrated multiway distribution served as an API.
 
 The deepest shift is not from one reinforcement-learning algorithm to another. It is from generating an unconstrained answer to estimating a calibrated distribution over actions already defined by software.
 
